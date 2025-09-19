@@ -53,19 +53,19 @@ Sometimes you just want to replace a text snippet which is not present in any "s
 - 💾 **Backup creation**: Optional backup files.
 - ⌨️ **Keyboard shortcuts**: Efficient workflow.
 
-### The tool
+## The tool
 
-## 📸 Screenshot
+### 📸 Screenshot
 
-<img width="877" height="927" alt="grafik" src="https://github.com/user-attachments/assets/52924273-4293-4d2b-aabb-405051283cb6" />
+<img width="526" height="556" alt="grafik" src="https://github.com/user-attachments/assets/52924273-4293-4d2b-aabb-405051283cb6" />
 
-## ▶️ YouTube
+### ▶️ YouTube
 
 This video, with a slightly outdated UI, shows the [tool in action](https://www.youtube.com/watch?v=ff8-k-COUYc).
 
 If you don't want to hear me talking for too long, just jump to [3:30](https://youtu.be/ff8-k-COUYc?si=H4sXY8syJmcAigQc&t=210).
 
-## 🎯 Use cases (examples)
+### 🎯 Use cases (examples)
 
 - **Legal documents**: Update contract terms across multiple files.
 - **Technical documentation**: Replace product names or versions.
@@ -73,7 +73,7 @@ If you don't want to hear me talking for too long, just jump to [3:30](https://y
 - **Academic papers**: Standardize terminology or citations.
 - **Corporate communications**: Update contact information or policies.
 
-## ⌨️ Keyboard shortcuts (excerpt)
+### ⌨️ Keyboard shortcuts (excerpt)
 
 | Shortcut | Action |
 |----------|--------|
@@ -85,13 +85,13 @@ If you don't want to hear me talking for too long, just jump to [3:30](https://y
 | `Ctrl+1/2` | Focus search/replace boxes |
 | `Tab` | Switch between search & replace boxes |
 
-## 📋 System requirements
+### 📋 System requirements
 
 - **OS**: Windows 7/8/10/11
 - **Software**: Microsoft Word (for Advanced Replace features)
 - **Installation**: None required for executable version
 
-### Project structure
+## Project structure
 ```
 WordTextReplacer/
 ├── c_m_e/                     # .reg file
