@@ -1,15 +1,15 @@
 # Bulk Text Replacement for Word
-🎯 Easy-to-use tool for replacing text in Word documents. Handles hyperlinks, shapes, headers, footers safely. Preview before changes, process multiple files at once. Perfect for bulk document updates. Download exe - no installation needed! Made for efficiency ⚡
+🎯 Easy-to-use tool for replacing text in Word documents. Handles hyperlinks, shapes, headers, footers safely. Previews changes and processes multiple files at once. Perfect for bulk document updates. Download exe - no installation needed! Made for efficiency ⚡
 
 ## 🚀 Quick start
 
 ### Option 1: Download executable
-1. Go to [**Releases**](../../releases) and download `WordTextReplacer.exe`.
+1. Go to [**exe**](exe) and download `WordTextReplacer.exe`.
 2. Double-click to run. **no installation required!**
 3. Add your Word documents and start replacing text.
 
 ### Option 2: Download executable and add it to your context menu (recommended for the fastest approach)
-1. Go to [**Releases**](../../releases) and download `WordTextReplacer.exe`.
+1. Go to [**exe**](exe) and download `WordTextReplacer.exe`.
 2. Save it to your preferred path. **no installation required!**
 3. Go to DINGS and download `add_word_text_replacer_to_your_context_menu.reg`.
 4. Adapt the .reg file by inserting the path where you saved `WordTextReplacer.exe` (step 2) in line 8 and 15.
@@ -20,9 +20,9 @@
 9. Start replacing text.
 
 ### Option 3: You're a developer? Use the code and have fun! 
-It's not much code, just download the three scripts and play around with it. :)
+It's not much code, just download the three scripts from [**src**](src) and play around with it. :)
 
-## ✨ Features
+## ✨ Features and best practices
 
 | Feature | Standard Replace | Advanced Replace |
 |---------|------------------|------------------|
@@ -32,7 +32,18 @@ It's not much code, just download the three scripts and play around with it. :)
 | **Headers & footers** | ❌ | ✅ |
 | **Footnotes & endnotes** | ❌ | ✅ |
 | **Form fields** | ❌ | ✅ |
+| **Formatting preserved?** | ✅ | ✅ |
 | **Hyperlinks** | ⚠️ Replaces text, but removes link | ✅ Replaces text and preserves links |
+
+#### When to use Standard Replace
+Large batch operations (100+ files)/Simple text in paragraphs and tables/No hyperlinks in replacement text/Speed is important/Basic formatting preservation
+- **Remember:** If your file has "special content (shapes, text boxes, headers, footers, footnotes, endnotes, form fields, and hyperlinks), but you are not going to replace any of this text, you can still use the very fast Standard Replace. It won't break any of your "special content".
+
+#### When to use Advanced Replace
+If you are going to replace "special content" as it will work for both standard content, such as paragraphs and tables, and "special content". It is just slower than the Standard Replace
+
+#### Why does the tool offer Standard Replace if Advanced Replace covers everything?
+Sometimes you just want to replace a text snippet which is not present in any "special content" and you want to do that as fast as possible. Therefore, I added the Standard Replace (which will maintain formatting, don't worry!).
 
 ### Additional features
 - 👀 **Preview**: See changes before running the search and replace workflow.
@@ -115,7 +126,7 @@ The tool is free and I am happy with sharing it with whoever wants to use it. If
 
 ---
 
-⬛🟦⬛**Forza Inter!**⬛🟦⬛ 
+⬛🟦⬛ **Forza Inter!** ⬛🟦⬛ 
 
 *Made with enthusiasm for efficient document processing.*
 
