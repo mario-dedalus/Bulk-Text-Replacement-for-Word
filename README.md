@@ -26,21 +26,21 @@ It's not much code, just download the three scripts from [**src**](src) and play
 
 | Feature | Standard Replace | Advanced Replace |
 |---------|------------------|------------------|
-| **Speed** | ⚡ Very Fast | 🔧 Comprehensive |
-| **Main content** | ✅ Paragraphs & Tables | ✅ Paragraphs & Tables |
+| **Speed** | ⚡ Very fast | 🔧 Comprehensive |
+| **Main content** | ✅ Paragraphs & tables | ✅ Paragraphs & tables |
 | **Shapes & text boxes** | ❌ | ✅ |
 | **Headers & footers** | ❌ | ✅ |
 | **Footnotes & endnotes** | ❌ | ✅ |
 | **Form fields** | ❌ | ✅ |
 | **Formatting preserved?** | ✅ | ✅ |
-| **Hyperlinks** | ⚠️ Replaces text, but removes link | ✅ Replaces text and preserves links |
+| **Hyperlinks** | ⚠️ Replaces text, but removes link. | ✅ Replaces text and preserves links. |
 
 #### When to use Standard Replace
 Large batch operations (100+ files)/Simple text in paragraphs and tables/No hyperlinks in replacement text/Speed is important/Basic formatting preservation
-- **Remember:** If your file has "special content (shapes, text boxes, headers, footers, footnotes, endnotes, form fields, and hyperlinks), but you are not going to replace any of this text, you can still use the very fast Standard Replace. It won't break any of your "special content".
+- **Remember:** If your file has "special content" (shapes, text boxes, headers, footers, footnotes, endnotes, form fields, and hyperlinks), but you are not going to replace any of this text, you can still use the very fast Standard Replace. It won't break any of your "special content".
 
 #### When to use Advanced Replace
-If you are going to replace "special content" as it will work for both standard content, such as paragraphs and tables, and "special content". It is just slower than the Standard Replace
+If you are going to replace "special content", use Advanced Replace as it will work for both standard content, such as paragraphs and tables, and "special content". It is just slower than the Standard Replace
 
 #### Why does the tool offer Standard Replace if Advanced Replace covers everything?
 Sometimes you just want to replace a text snippet which is not present in any "special content" and you want to do that as fast as possible. Therefore, I added the Standard Replace (which will maintain formatting, don't worry!).
