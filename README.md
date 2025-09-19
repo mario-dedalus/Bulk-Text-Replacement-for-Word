@@ -115,7 +115,7 @@ This project is licensed under the MIT License - see [LICENSE](LICENSE) for deta
 
 ## 🫶 Support
 
-The tool is free and I am happy with sharing it with whoever wants to use it. If you want, you can [buy me a coffee](https://buymeacoffee.com/abbatem). ☕🙏
+The tool is free and I am happy with sharing it with whoever wants to use it. If you want, you can [buy me a coffee](https://buymeacoffee.com/abbatem). ☕🙏 And connect with [me](https://www.linkedin.com/in/mario-abbate-601885150/)!
 
 ## 🏆 Acknowledgments
 
