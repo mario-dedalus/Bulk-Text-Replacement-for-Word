@@ -11,7 +11,7 @@
 ### Option 2: Download executable and add it to your context menu (recommended for the fastest approach)
 1. Go to [**exe**](exe) and download `WordTextReplacer.exe`.
 2. Save it to your preferred path. **no installation required!**
-3. Go to DINGS and download `add_word_text_replacer_to_your_context_menu.reg`.
+3. Go to [**c_m_e**](c_m_e) and download `add_word_text_replacer_to_your_context_menu.reg`.
 4. Adapt the .reg file by inserting the path where you saved `WordTextReplacer.exe` (step 2) in line 8 and 15.
    (Optional: Edit the icon in line 4 & 11 and the text of the context menu line 5 & 12.)
 6. Run the .reg file and confirm that you want to add it to registry editor. Afterwards, you can delete the .reg file.
