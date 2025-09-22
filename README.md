@@ -1,5 +1,5 @@
 # Bulk Text Replacement for Word
-🎯 Easy-to-use tool for bulk text replacements in Word documents. Handles hyperlinks, shapes, headers, footers safely. Previews changes and processes multiple files at once. Perfect for bulk document updates. Download exe - no installation needed! Made for efficiency ⚡
+🎯 Easy-to-use tool for bulk text replacements in Word documents. Handles hyperlinks, shapes, headers, footers safely. Previews changes and processes multiple files at once. Perfect for bulk document updates. Download exe, no installation needed! Made for efficiency.⚡
 
 ## 🚀 Quick start
 
