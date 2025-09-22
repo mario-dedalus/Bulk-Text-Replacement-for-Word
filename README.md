@@ -40,7 +40,7 @@ Large batch operations (100+ files)/Simple text in paragraphs and tables/No hype
 - **Remember:** If your file has "special content" (shapes, text boxes, headers, footers, footnotes, endnotes, form fields, and hyperlinks), but you are not going to replace any of this text, you can still use the very fast Standard Replace. It won't break any of your "special content".
 
 #### When to use Advanced Replace
-If you are going to replace "special content", use Advanced Replace as it will work for both standard content, such as paragraphs and tables, and "special content". It is just slower than the Standard Replace
+If you are going to replace "special content", use Advanced Replace as it will work for both standard content, such as paragraphs and tables, and "special content". It is just slower than the Standard Replace as it does not use python-docx, but the Visual Basic script.
 
 #### Why does the tool offer Standard Replace if Advanced Replace covers everything?
 Sometimes you just want to replace a text snippet which is not present in any "special content" and you want to do that as fast as possible. Therefore, I added the Standard Replace (which will maintain formatting, don't worry!).
