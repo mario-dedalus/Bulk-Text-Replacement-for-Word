@@ -111,7 +111,7 @@ Contributions are welcome! I am not an experienced developer. If you have ideas/
 
 ## 📄 License
 
-This project is licensed under the Apache 2.0 License with Commons Clause. – See [LICENSE](LICENSE) for details.
+Licensed under a Source-Available License (Apache 2.0 + No Selling clause). – See [LICENSE](LICENSE) for details.
 
 ## 🫶 Support
 
