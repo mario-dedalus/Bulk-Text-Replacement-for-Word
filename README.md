@@ -14,7 +14,7 @@
 3. Go to [**c_m_e**](c_m_e) and download `add_word_text_replacer_to_your_context_menu.reg`.
 4. Adapt the .reg file by inserting the path where you saved `WordTextReplacer.exe` (step 2) in line 8 and 15.
    (Optional: Edit the icon in line 4 & 11 and the text of the context menu line 5 & 12.)
-6. Run the .reg file and confirm that you want to add it to registry editor. Afterwards, you can delete the .reg file.
+6. Run the .reg file and confirm that you want to add it to registry editor. Afterwards, you can delete the .reg file. This is a one-time effort only.
 7. Right-click on any .doc/.docx/.docm file and click on your context menu entry to run the script.
    (Optional: Add more files in which you want to run the search and replace workflow.)
 9. Start replacing text.
