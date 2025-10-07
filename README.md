@@ -5,7 +5,7 @@
 
 ### Option 1: Download executable
 1. Go to [**exe**](exe) and download `WordTextReplacer.exe`.
-2. Double-click to run. **no installation required!**
+2. Double-click to run. **No installation required!**
 3. Add your Word documents and start replacing text.
 
 ### Option 2: Download executable and add it to your context menu (recommended for the fastest approach)
