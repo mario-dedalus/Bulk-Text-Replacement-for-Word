@@ -64,7 +64,7 @@ Sometimes you just want to replace a text snippet which is not present in any "s
 
 ### 📸 Screenshot
 
-<img width="526" height="556" alt="grafik" src="https://github.com/user-attachments/assets/52924273-4293-4d2b-aabb-405051283cb6" />
+<img width="526" height="556" alt="grafik" src="https://github.com/user-attachments/assets/272e3821-4496-4f14-bf70-f185774e284b" />
 
 ### ▶️ YouTube
 
