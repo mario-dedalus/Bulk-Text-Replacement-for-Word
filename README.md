@@ -102,6 +102,7 @@ If you don't want to hear me talking for too long, just jump to [3:30](https://y
 ## Project structure
 ```
 WordTextReplacer/
+├── _legacy/                   # legacy version (v1)
 ├── c_m_e/                     # .reg file
 ├── doc/                       # User Manual
 ├── exe/                       # .exe file
