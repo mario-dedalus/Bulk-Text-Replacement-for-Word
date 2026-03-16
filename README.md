@@ -28,7 +28,7 @@ It's just one Python file — download it from [**src**](src) and play around wi
 |---------|------------------|------------------|
 | **Speed** | ⚡ Very fast | 🔧 Comprehensive |
 | **Main content** | ✅ Paragraphs & tables | ✅ Paragraphs & tables |
-| **Text boxes** | ❌ | ✅ All types (Insert > Text Box, shapes, grouped) |
+| **Text boxes** | ❌ | ✅ All types |
 | **Headers & footers** | ❌ | ✅ |
 | **Footnotes & endnotes** | ❌ | ✅ |
 | **Form fields** | ❌ | ✅ |
