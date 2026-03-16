@@ -4,20 +4,39 @@ import tkinter as tk
 from tkinter import messagebox, scrolledtext, filedialog
 from docx import Document
 import re
-import subprocess  # For VBScript integration
+try:
+    import win32com.client
+    HAS_WIN32COM = True
+except ImportError:
+    HAS_WIN32COM = False
+try:
+    import windnd
+    HAS_WINDND = True
+except ImportError:
+    HAS_WINDND = False
+
+# Translation table for stripping invisible formatting characters
+# (soft hyphens, zero-width spaces, etc. that Word inserts for formatting)
+_INVISIBLE_CHARS_TABLE = str.maketrans('', '', '\u00AD\u200B\u200C\u200D\u2060\uFEFF')
 
 class WordTextReplacerSingle:
     def __init__(self, initial_file=None):
         self.file_paths = []
+        self._text_cache = {}
+        self._live_count_after_id = None
         if initial_file and os.path.exists(initial_file):
             self.file_paths.append(initial_file)
         
         self.root = tk.Tk()
         self.setup_gui()
         
+        # Build initial text cache
+        if self.file_paths:
+            self._refresh_text_cache()
+        
     def setup_gui(self):
         self.update_title()
-        self.root.geometry("700x710")
+        self.root.geometry("700x780")
         self.root.resizable(True, True)
         
         # Main frame
@@ -153,6 +172,24 @@ class WordTextReplacerSingle:
                                       variable=self.case_sensitive_var, font=("Arial", 10))
         case_checkbox.pack(side=tk.LEFT)
         
+        # Third row of options
+        options_row3 = tk.Frame(options_frame)
+        options_row3.pack(fill=tk.X, pady=(5, 0))
+        
+        self.regex_var = tk.BooleanVar(value=False)
+        regex_checkbox = tk.Checkbutton(options_row3, text="Regex (Standard Replace only)", 
+                                       variable=self.regex_var, font=("Arial", 10))
+        regex_checkbox.pack(side=tk.LEFT)
+        
+        # Fourth row of options
+        options_row4 = tk.Frame(options_frame)
+        options_row4.pack(fill=tk.X, pady=(5, 0))
+        
+        self.whole_word_var = tk.BooleanVar(value=False)
+        whole_word_checkbox = tk.Checkbutton(options_row4, text="Whole word match", 
+                                            variable=self.whole_word_var, font=("Arial", 10))
+        whole_word_checkbox.pack(side=tk.LEFT)
+        
         # Buttons frame
         button_frame = tk.Frame(main_frame)
         button_frame.pack(fill=tk.X, pady=(0, 10))
@@ -194,11 +231,27 @@ class WordTextReplacerSingle:
         self.status_label = tk.Label(main_frame, text="Ready", fg="green", font=("Arial", 9))
         self.status_label.pack(anchor="w")
         
+        # Match counter label (live counting)
+        self.match_counter_label = tk.Label(main_frame, text="", fg="#555555", font=("Arial", 9, "italic"))
+        self.match_counter_label.pack(anchor="w")
+        
         # Setup keyboard bindings
         self.setup_keyboard_bindings()
         
         # Update the file list display
         self.update_file_list()
+        
+        # Setup drag & drop (deferred to ensure window HWND is ready)
+        if HAS_WINDND:
+            self.root.after(100, self._setup_drag_drop)
+        
+        # Bind search text changes for live counter
+        self.search_text.bind('<KeyRelease>', self._on_search_key_release)
+        
+        # Also trigger live count when options change
+        self.case_sensitive_var.trace_add('write', lambda *_: self._schedule_live_count())
+        self.regex_var.trace_add('write', lambda *_: self._schedule_live_count())
+        self.whole_word_var.trace_add('write', lambda *_: self._schedule_live_count())
         
         # Focus on search field
         self.search_text.focus()
@@ -208,10 +261,14 @@ class WordTextReplacerSingle:
         """Convert _nbsp_ placeholders to actual non-breaking spaces"""
         return text.replace('_nbsp_', '\u00A0')
 
+    def _strip_invisible_chars(self, text):
+        """Remove invisible formatting characters (soft hyphens, zero-width spaces, etc.)"""
+        return text.translate(_INVISIBLE_CHARS_TABLE)
+
     def get_processed_search_text(self):
-        """Get search text with _nbsp_ converted to actual non-breaking spaces"""
+        """Get search text with _nbsp_ converted and invisible chars stripped"""
         raw_text = self.search_text.get("1.0", tk.END).strip()
-        return self.preprocess_text_with_nbsp(raw_text)
+        return self._strip_invisible_chars(self.preprocess_text_with_nbsp(raw_text))
 
     def get_processed_replace_text(self):
         """Get replace text with _nbsp_ converted to actual non-breaking spaces"""
@@ -237,6 +294,86 @@ class WordTextReplacerSingle:
         debug_info += f"nbsp in replace text: {processed_replace.count(nbsp_char)}\n\n"
         
         messagebox.showinfo("nbsp check", debug_info)
+
+    # ── Drag & Drop ──
+    def _setup_drag_drop(self):
+        """Setup drag & drop after window is fully realized"""
+        try:
+            windnd.hook_dropfiles(self.root, func=self._on_drop_files)
+        except Exception:
+            pass
+
+    def _on_drop_files(self, file_list):
+        """Handle files dropped onto the window"""
+        added_count = 0
+        for raw in file_list:
+            file_path = raw.decode('utf-8') if isinstance(raw, bytes) else str(raw)
+            if not file_path.lower().endswith(('.docx', '.doc', '.docm')):
+                continue
+            normalized = os.path.normpath(os.path.abspath(file_path))
+            already = any(os.path.normpath(os.path.abspath(ep)) == normalized for ep in self.file_paths)
+            if not already:
+                self.file_paths.append(file_path)
+                added_count += 1
+        if added_count > 0:
+            self._refresh_text_cache()
+            self.update_file_list()
+            self.status_label.config(text=f"Dropped {added_count} file{'s' if added_count != 1 else ''}", fg="blue")
+            self._schedule_live_count()
+        else:
+            self.status_label.config(text="No new Word files in drop (duplicates or wrong type).", fg="orange")
+
+    # ── Live Match Counter ──
+    def _on_search_key_release(self, event=None):
+        self._schedule_live_count()
+
+    def _schedule_live_count(self):
+        if self._live_count_after_id is not None:
+            self.root.after_cancel(self._live_count_after_id)
+        self._live_count_after_id = self.root.after(400, self._do_live_count)
+
+    def _refresh_text_cache(self):
+        """Re-read document text for all current files"""
+        self._text_cache.clear()
+        for fp in self.file_paths:
+            try:
+                doc = Document(fp)
+                self._text_cache[fp] = self.get_document_text(doc)
+            except Exception:
+                self._text_cache[fp] = ""
+
+    def _do_live_count(self):
+        """Perform the live count against cached text"""
+        self._live_count_after_id = None
+        search_for = self.get_processed_search_text()
+        if not search_for or not self._text_cache:
+            self.match_counter_label.config(text="")
+            return
+        case_sensitive = self.case_sensitive_var.get()
+        use_regex = self.regex_var.get()
+        whole_word = self.whole_word_var.get()
+        
+        if use_regex:
+            try:
+                re.compile(search_for)
+            except re.error:
+                self.match_counter_label.config(text="Invalid regex", fg="red")
+                return
+        
+        total = 0
+        files_with = 0
+        for fp, text in self._text_cache.items():
+            c = self.count_occurrences(text, search_for, case_sensitive, use_regex, whole_word)
+            total += c
+            if c > 0:
+                files_with += 1
+        
+        if total > 0:
+            self.match_counter_label.config(
+                text=f"Live: {total} match(es) in {files_with} file(s)  [main content only]",
+                fg="#1565c0")
+        else:
+            self.match_counter_label.config(text="Live: No matches found", fg="#888888")
 
     def check_hyperlinks(self):
         """Check selected files for hyperlinks using python-docx"""
@@ -495,6 +632,10 @@ class WordTextReplacerSingle:
 
     Hyperlinks:
     • 🔗 Hyperlink check - Checks the selected files for hyperlinks
+
+    Regex:
+    • Supported in Standard Replace/Preview only (Python regex syntax)
+    • Not supported in Advanced Replace/Preview (uses Word's native engine)
     
     𝗙𝗼𝗿𝘇𝗮 𝗜𝗻𝘁𝗲𝗿!"""
         
@@ -760,6 +901,7 @@ class WordTextReplacerSingle:
             self.search_text.delete("1.0", tk.END)
             self.search_text.insert("1.0", clipboard_content)
             self.status_label.config(text="Pasted clipboard content to search box.", fg="blue")
+            self._schedule_live_count()
         except tk.TclError:
             self.status_label.config(text="Clipboard is empty or contains non-text data.", fg="orange")
     
@@ -831,8 +973,10 @@ class WordTextReplacerSingle:
                 added_count += 1
         
         if added_count > 0:
+            self._refresh_text_cache()
             self.update_file_list()
             self.status_label.config(text=f"Added {added_count} file{'s' if added_count != 1 else ''}", fg="blue")
+            self._schedule_live_count()
         else:
             if len(selected_files) > 0:
                 self.status_label.config(text="Files already in list - no duplicates added.", fg="orange")
@@ -852,7 +996,9 @@ class WordTextReplacerSingle:
             for index in reversed(selections):
                 del self.file_paths[index]
             
+            self._refresh_text_cache()
             self.update_file_list()
+            self._schedule_live_count()
             
             # Update status message
             if len(removed_files) == 1:
@@ -868,32 +1014,85 @@ class WordTextReplacerSingle:
             if messagebox.askyesno("Confirm", "Remove all files from the list?"):
                 file_count = len(self.file_paths)
                 self.file_paths.clear()
+                self._text_cache.clear()
                 self.update_file_list()
+                self.match_counter_label.config(text="")
                 self.status_label.config(text=f"Cleared {file_count} file{'s' if file_count != 1 else ''}", fg="orange")
     
     def get_document_text(self, doc):
         """Extract all text from document including paragraphs and tables"""
         full_text = []
         
-        # Get text from paragraphs
+        # Get text from paragraphs (strip invisible formatting chars)
         for paragraph in doc.paragraphs:
-            full_text.append(paragraph.text)
+            full_text.append(self._strip_invisible_chars(paragraph.text))
         
-        # Get text from tables
+        # Get text from tables (including nested tables)
         for table in doc.tables:
-            for row in table.rows:
-                for cell in row.cells:
-                    for paragraph in cell.paragraphs:
-                        full_text.append(paragraph.text)
+            self._collect_table_text(table, full_text)
         
         return '\n'.join(full_text)
     
-    def count_occurrences(self, text, search_for, case_sensitive=False):
-        """Count occurrences with case sensitivity option"""
+    def _collect_table_text(self, table, text_list):
+        """Recursively collect text from a table and its nested tables"""
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    text_list.append(self._strip_invisible_chars(paragraph.text))
+                for nested_table in cell.tables:
+                    self._collect_table_text(nested_table, text_list)
+    
+    def count_occurrences(self, text, search_for, case_sensitive=False, use_regex=False, whole_word=False):
+        """Count occurrences with case sensitivity, regex, and whole word options"""
+        if not search_for:
+            return 0
+        # Normalize: strip invisible formatting characters
+        text = self._strip_invisible_chars(text)
+        search_for = self._strip_invisible_chars(search_for)
+        if use_regex:
+            try:
+                flags = 0 if case_sensitive else re.IGNORECASE
+                return len(re.findall(search_for, text, flags))
+            except re.error:
+                return 0
+        if whole_word:
+            pattern = r'\b' + re.escape(search_for) + r'\b'
+            flags = 0 if case_sensitive else re.IGNORECASE
+            return len(re.findall(pattern, text, flags))
         if not case_sensitive:
             return text.lower().count(search_for.lower())
         else:
             return text.count(search_for)
+
+    def _find_match_contexts(self, text, search_for, case_sensitive=False, use_regex=False, whole_word=False, context_chars=40, max_matches=5):
+        """Extract surrounding context for each match (for diff preview)"""
+        contexts = []
+        if not search_for:
+            return contexts
+        text = self._strip_invisible_chars(text)
+        search_for = self._strip_invisible_chars(search_for)
+        if use_regex:
+            pattern = search_for
+        elif whole_word:
+            pattern = r'\b' + re.escape(search_for) + r'\b'
+        else:
+            pattern = re.escape(search_for)
+        flags = 0 if case_sensitive else re.IGNORECASE
+        try:
+            for i, m in enumerate(re.finditer(pattern, text, flags)):
+                if i >= max_matches:
+                    break
+                start = max(0, m.start() - context_chars)
+                end = min(len(text), m.end() + context_chars)
+                before = text[start:m.start()].replace('\n', ' ').replace('\r', '')
+                matched = m.group().replace('\n', ' ').replace('\r', '')
+                after = text[m.end():end].replace('\n', ' ').replace('\r', '')
+                prefix = "..." if start > 0 else ""
+                suffix = "..." if end < len(text) else ""
+                contexts.append(f'{prefix}{before}[{matched}]{after}{suffix}')
+        except re.error:
+            pass
+        return contexts
 
     def preview_changes(self):
         """Show preview with choice between Standard (fast) or Advanced (comprehensive) mode"""
@@ -906,6 +1105,14 @@ class WordTextReplacerSingle:
         if not search_for:
             messagebox.showwarning("Warning", "Please enter text to search for.")
             return
+        
+        use_regex = self.regex_var.get()
+        if use_regex:
+            try:
+                re.compile(search_for)
+            except re.error as e:
+                messagebox.showerror("Invalid Regex", f"Invalid regex pattern:\n{str(e)}")
+                return
         
         # NEW: Ask user for preview mode
         preview_choice = messagebox.askyesnocancel(
@@ -928,6 +1135,8 @@ class WordTextReplacerSingle:
         """Fast preview - Main content only (python-docx)"""
         search_for = self.get_processed_search_text()
         case_sensitive = self.case_sensitive_var.get()
+        use_regex = self.regex_var.get()
+        whole_word = self.whole_word_var.get()
         
         try:
             preview_details = []
@@ -956,13 +1165,16 @@ class WordTextReplacerSingle:
                     # Analyze main content only (python-docx)
                     doc = Document(file_path)
                     document_text = self.get_document_text(doc)
-                    main_occurrences = self.count_occurrences(document_text, search_for, case_sensitive)
+                    main_occurrences = self.count_occurrences(document_text, search_for, case_sensitive, use_regex, whole_word)
                     
                     file_result['main_total'] = main_occurrences
+                    file_result['contexts'] = []
                     if main_occurrences > 0:
                         files_with_matches += 1
                         total_matches += main_occurrences
                         file_result['details'].append(f"  📄 Main content: {main_occurrences} match(es)")
+                        file_result['contexts'] = self._find_match_contexts(
+                            document_text, search_for, case_sensitive, use_regex, whole_word)
                     else:
                         file_result['details'].append(f"  📄 Main content: No matches")
                     
@@ -1014,6 +1226,16 @@ class WordTextReplacerSingle:
             
             for detail in result['details']:
                 message += f"   {detail}\n"
+            
+            # Diff preview: show context snippets
+            contexts = result.get('contexts', [])
+            if contexts:
+                message += f"\n   📝 Preview (first {len(contexts)} match{'es' if len(contexts) != 1 else ''}):\n"
+                for j, ctx in enumerate(contexts, 1):
+                    message += f"      {j}. {ctx}\n"
+                if result['main_total'] > len(contexts):
+                    message += f"      ... and {result['main_total'] - len(contexts)} more\n"
+            
             message += "\n" + "=" * 77 + "\n\n"
         
         # Recommendations
@@ -1027,10 +1249,25 @@ class WordTextReplacerSingle:
         self.show_scrollable_results(message, "Standard Preview results")
 
     def preview_comprehensive(self):
-        """Comprehensive preview - All areas using VBScript only"""
+        """Comprehensive preview - All areas using Word COM automation"""
         search_for = self.get_processed_search_text()
         case_sensitive = self.case_sensitive_var.get()
         
+        if not HAS_WIN32COM:
+            messagebox.showerror("Error", 
+                "Advanced preview requires the 'pywin32' package.\n\n"
+                "Install it with: pip install pywin32")
+            return
+        
+        if self.regex_var.get():
+            messagebox.showinfo("Regex Not Supported", 
+                "Regex is only supported with Standard Preview/Replace.\n\n"
+                "Advanced Preview uses Word's native engine\n"
+                "which does not support Python regex syntax.\n\n"
+                "Please uncheck 'Regex' or use Standard Preview instead.")
+            return
+        
+        word_app = None
         try:
             preview_details = []
             total_advanced_matches = 0
@@ -1041,10 +1278,11 @@ class WordTextReplacerSingle:
             self.progress_frame.pack(fill=tk.X, pady=(10, 0))
             self.root.update()
             
-            # Check if VBScript is available for advanced preview
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            vbs_path = os.path.join(script_dir, "word_advanced_preview.vbs")
-            advanced_available = os.path.exists(vbs_path)
+            # Open Word once for all files
+            word_app = win32com.client.Dispatch("Word.Application")
+            word_app.Visible = False
+            word_app.DisplayAlerts = False
+            word_app.ScreenUpdating = False
             
             for i, file_path in enumerate(self.file_paths):
                 # Update progress
@@ -1060,24 +1298,24 @@ class WordTextReplacerSingle:
                         'details': []
                     }
                     
-                    # Use VBScript for everything (matches what Advanced Replace does)
-                    if advanced_available:
-                        advanced_result = self.preview_advanced_areas(file_path, search_for, case_sensitive)
-                        file_result['total'] = advanced_result['total']
-                        
-                        if advanced_result['total'] > 0:
-                            files_with_advanced_matches += 1
-                            total_advanced_matches += advanced_result['total']
-                            file_result['details'].extend(advanced_result['details'])
-                        else:
-                            file_result['details'].append(f"  📄 No matches found in any areas")
+                    advanced_result = self.preview_advanced_areas(file_path, search_for, case_sensitive, word_app)
+                    file_result['total'] = advanced_result['total']
+                    
+                    if advanced_result['total'] > 0:
+                        files_with_advanced_matches += 1
+                        total_advanced_matches += advanced_result['total']
+                        file_result['details'].extend(advanced_result['details'])
                     else:
-                        file_result['details'].append(f"  📄 VBScript not available")
+                        file_result['details'].append(f"  📄 No matches found in any areas")
                     
                     preview_details.append(file_result)
                     
                 except Exception as e:
-                    file_result['details'] = [f"  ❌ Error: {str(e)}"]
+                    file_result = {
+                        'filename': os.path.basename(file_path),
+                        'total': 0,
+                        'details': [f"  ❌ Error: {str(e)}"]
+                    }
                     preview_details.append(file_result)
             
             # Hide progress
@@ -1088,13 +1326,20 @@ class WordTextReplacerSingle:
             self.show_comprehensive_preview_results(
                 preview_details, search_for, self.get_processed_replace_text(),
                 total_advanced_matches, files_with_advanced_matches, 
-                case_sensitive, advanced_available
+                case_sensitive
             )
             
         except Exception as e:
             self.progress_frame.pack_forget()
             self.status_label.config(text="Error occurred", fg="red")
             messagebox.showerror("Error", f"Error during comprehensive preview: {str(e)}")
+        finally:
+            try:
+                if word_app:
+                    word_app.ScreenUpdating = True
+                    word_app.Quit()
+            except Exception:
+                pass
 #########END OF PART 2######
 
 
@@ -1102,191 +1347,247 @@ class WordTextReplacerSingle:
 
 
 #########PART 3A######
-    def preview_advanced_areas(self, file_path, search_text, case_sensitive=False):
-        """Preview advanced areas using VBScript - READ ONLY"""
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        vbs_preview_path = os.path.join(script_dir, "word_advanced_preview.vbs")
-        
-        # Create a preview-only VBScript if it doesn't exist
-        if not os.path.exists(vbs_preview_path):
-            self.create_preview_vbscript(vbs_preview_path)
-        
+    def _build_shape_ranges(self, doc):
+        """Pre-build list of (start, end) for all shapes with text frames.
+        Used to check if a hyperlink is inside a shape in O(n) instead of O(n*m)."""
+        ranges = []
+        self._collect_shape_ranges(doc.Shapes, ranges)
+        return ranges
+
+    def _collect_shape_ranges(self, shapes, ranges):
+        """Recursively collect text frame ranges from shapes (including grouped shapes)"""
+        for shape in shapes:
+            try:
+                if shape.HasTextFrame and shape.TextFrame.HasText:
+                    ranges.append((shape.TextFrame.TextRange.Start, shape.TextFrame.TextRange.End))
+            except Exception:
+                pass
+            try:
+                if shape.Type == 6:  # msoGroup
+                    self._collect_shape_ranges(shape.GroupItems, ranges)
+            except Exception:
+                pass
+
+    def _is_in_shape_ranges(self, start, end, shape_ranges):
+        """Check if a range is inside any pre-cached shape range."""
+        for s_start, s_end in shape_ranges:
+            if start >= s_start and end <= s_end:
+                return True
+        return False
+
+    def _count_in_shapes(self, shapes, search_text, case_sensitive, whole_word):
+        """Recursively count occurrences in shapes (including grouped shapes)"""
+        count = 0
+        for shape in shapes:
+            try:
+                if shape.HasTextFrame and shape.TextFrame.HasText:
+                    shape_text = shape.TextFrame.TextRange.Text
+                    if len(shape_text) > 1:
+                        count += self.count_occurrences(shape_text, search_text, case_sensitive, False, whole_word)
+            except Exception:
+                pass
+            try:
+                if shape.Type == 6:  # msoGroup
+                    count += self._count_in_shapes(shape.GroupItems, search_text, case_sensitive, whole_word)
+            except Exception:
+                pass
+        return count
+
+    def _replace_in_shapes(self, shapes, search_text, replace_text, case_sensitive, whole_word):
+        """Recursively replace in shapes using iterative Find (including grouped shapes)"""
+        count = 0
+        for shape in shapes:
+            try:
+                if shape.HasTextFrame and shape.TextFrame.HasText:
+                    if len(shape.TextFrame.TextRange.Text) > 1:
+                        count += self._find_replace_count(
+                            shape.TextFrame.TextRange, search_text, replace_text, case_sensitive, whole_word)
+            except Exception:
+                pass
+            try:
+                if shape.Type == 6:  # msoGroup
+                    count += self._replace_in_shapes(shape.GroupItems, search_text, replace_text, case_sensitive, whole_word)
+            except Exception:
+                pass
+        return count
+
+    def _find_replace_count(self, rng, search_text, replace_text, case_sensitive, whole_word=False):
+        """Iterative Find.Execute (Option A) — replaces one match at a time, returns exact count."""
+        count = 0
+        rng.Find.ClearFormatting()
+        rng.Find.Replacement.ClearFormatting()
+        while True:
+            found = rng.Find.Execute(
+                FindText=search_text, ReplaceWith=replace_text,
+                Replace=1, Forward=True, Wrap=0,
+                MatchCase=case_sensitive, MatchWholeWord=whole_word,
+                MatchWildcards=False, MatchSoundsLike=False,
+                MatchAllWordForms=False, Format=False
+            )
+            if not found:
+                break
+            count += 1
+        return count
+
+    def preview_advanced_areas(self, file_path, search_text, case_sensitive=False, word_app=None):
+        """Preview advanced areas using Word COM automation - READ ONLY"""
         result = {
             'total': 0,
             'details': []
         }
         
+        whole_word = self.whole_word_var.get()
+        own_word_app = False
+        doc = None
         try:
+            if word_app is None:
+                word_app = win32com.client.Dispatch("Word.Application")
+                word_app.Visible = False
+                word_app.DisplayAlerts = False
+                word_app.ScreenUpdating = False
+                own_word_app = True
+            
             full_path = os.path.abspath(file_path)
+            doc = word_app.Documents.Open(full_path, ReadOnly=True)
             
-            # HIDE CMD WINDOW
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            startupinfo.wShowWindow = subprocess.SW_HIDE
+            shapes_count = 0
+            headers_count = 0
+            footers_count = 0
+            footnotes_count = 0
+            endnotes_count = 0
+            form_fields_count = 0
+            hyperlinks_count = 0
+            main_content_count = 0
             
-            # Use case sensitivity flag: 1 for case sensitive, 0 for case insensitive
-            case_flag = "1" if case_sensitive else "0"
+            # Count in text boxes / shapes via StoryRanges (wdTextFrameStory = 5)
+            # This catches ALL text boxes regardless of how they were inserted
+            try:
+                story = doc.StoryRanges(5)  # wdTextFrameStory
+                while story:
+                    story_text = story.Text
+                    if len(story_text) > 1:
+                        shapes_count += self.count_occurrences(story_text, search_text, case_sensitive, False, whole_word)
+                    try:
+                        story = story.NextStoryRange
+                    except Exception:
+                        break
+            except Exception:
+                pass
             
-            vbs_result = subprocess.run([
-                'cscript', '//NoLogo', vbs_preview_path, full_path, search_text, case_flag
-            ], capture_output=True, text=True, cwd=script_dir,
-               startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW)
+            # Count in headers and footers
+            for section in doc.Sections:
+                for i in range(1, 4):
+                    try:
+                        if section.Headers(i).Exists:
+                            header_text = section.Headers(i).Range.Text
+                            if len(header_text) > 1:
+                                headers_count += self.count_occurrences(header_text, search_text, case_sensitive, False, whole_word)
+                    except Exception:
+                        pass
+                    try:
+                        if section.Footers(i).Exists:
+                            footer_text = section.Footers(i).Range.Text
+                            if len(footer_text) > 1:
+                                footers_count += self.count_occurrences(footer_text, search_text, case_sensitive, False, whole_word)
+                    except Exception:
+                        pass
             
-            if vbs_result.returncode == 0:
-                # Parse successful output
-                output_lines = vbs_result.stdout.strip().split('\n')
-                
-                for line in output_lines:
-                    if "SHAPES:" in line:
-                        count = int(line.split(':')[1].split()[0])
-                        if count > 0:
-                            result['details'].append(f"  📦 Shapes: {count} match(es)")
-                            result['total'] += count
-                    elif "HEADERS:" in line:
-                        count = int(line.split(':')[1].split()[0])
-                        if count > 0:
-                            result['details'].append(f"  📄 Headers: {count} match(es)")
-                            result['total'] += count
-                    elif "FOOTERS:" in line:
-                        count = int(line.split(':')[1].split()[0])
-                        if count > 0:
-                            result['details'].append(f"  📄 Footers: {count} match(es)")
-                            result['total'] += count
-                    elif "FOOTNOTES:" in line:
-                        count = int(line.split(':')[1].split()[0])
-                        if count > 0:
-                            result['details'].append(f"  📝 Footnotes: {count} match(es)")
-                            result['total'] += count
-                    elif "ENDNOTES:" in line:
-                        count = int(line.split(':')[1].split()[0])
-                        if count > 0:
-                            result['details'].append(f"  📝 Endnotes: {count} match(es)")
-                            result['total'] += count
-                    elif "FORMFIELDS:" in line:
-                        count = int(line.split(':')[1].split()[0])
-                        if count > 0:
-                            result['details'].append(f"  📋 Form fields: {count} match(es)")
-                            result['total'] += count
-                    elif "HYPERLINKS:" in line:
-                        count = int(line.split(':')[1].split()[0])
-                        if count > 0:
-                            result['details'].append(f"  🔗 Hyperlinks: {count} match(es)")
-                            result['total'] += count
-                    elif "MAINCONTENT:" in line:
-                        count = int(line.split(':')[1].split()[0])
-                        if count > 0:
-                            result['details'].append(f"  📄 Main content: {count} match(es)")
-                            result['total'] += count
+            # Count in footnotes
+            for footnote in doc.Footnotes:
+                try:
+                    footnote_text = footnote.Range.Text
+                    if len(footnote_text) > 1:
+                        footnotes_count += self.count_occurrences(footnote_text, search_text, case_sensitive, False, whole_word)
+                except Exception:
+                    pass
+            
+            # Count in endnotes
+            for endnote in doc.Endnotes:
+                try:
+                    endnote_text = endnote.Range.Text
+                    if len(endnote_text) > 1:
+                        endnotes_count += self.count_occurrences(endnote_text, search_text, case_sensitive, False, whole_word)
+                except Exception:
+                    pass
+            
+            # Count in form fields
+            for field in doc.FormFields:
+                try:
+                    if field.Type == 70:  # wdFieldFormTextInput
+                        field_text = field.Result
+                        if len(field_text) > 0:
+                            form_fields_count += self.count_occurrences(field_text, search_text, case_sensitive, False, whole_word)
+                except Exception:
+                    pass
+            
+            # Count in hyperlinks (ONLY those NOT in shapes to avoid double counting)
+            shape_ranges = self._build_shape_ranges(doc)
+            for hyperlink in doc.Hyperlinks:
+                try:
+                    display_text = hyperlink.TextToDisplay
+                    if len(display_text) > 0:
+                        if not self._is_in_shape_ranges(hyperlink.Range.Start, hyperlink.Range.End, shape_ranges):
+                            hyperlinks_count += self.count_occurrences(display_text, search_text, case_sensitive, False, whole_word)
+                except Exception:
+                    pass
+            
+            # Count in main content (subtract hyperlink matches to avoid double-counting,
+            # since doc.Content.Text includes hyperlink display text)
+            try:
+                main_text = doc.Content.Text
+                if len(main_text) > 1:
+                    raw_main_count = self.count_occurrences(main_text, search_text, case_sensitive, False, whole_word)
+                    main_content_count = max(0, raw_main_count - hyperlinks_count)
+            except Exception:
+                pass
+            
+            # Build results
+            if shapes_count > 0:
+                result['details'].append(f"  📦 Text boxes: {shapes_count} match(es)")
+                result['total'] += shapes_count
+            if headers_count > 0:
+                result['details'].append(f"  📄 Headers: {headers_count} match(es)")
+                result['total'] += headers_count
+            if footers_count > 0:
+                result['details'].append(f"  📄 Footers: {footers_count} match(es)")
+                result['total'] += footers_count
+            if footnotes_count > 0:
+                result['details'].append(f"  📝 Footnotes: {footnotes_count} match(es)")
+                result['total'] += footnotes_count
+            if endnotes_count > 0:
+                result['details'].append(f"  📝 Endnotes: {endnotes_count} match(es)")
+                result['total'] += endnotes_count
+            if form_fields_count > 0:
+                result['details'].append(f"  📋 Form fields: {form_fields_count} match(es)")
+                result['total'] += form_fields_count
+            if hyperlinks_count > 0:
+                result['details'].append(f"  🔗 Hyperlinks: {hyperlinks_count} match(es)")
+                result['total'] += hyperlinks_count
+            if main_content_count > 0:
+                result['details'].append(f"  📄 Main content: {main_content_count} match(es)")
+                result['total'] += main_content_count
             
             return result
             
         except Exception as e:
             result['details'] = [f"  ❌ Advanced preview error: {str(e)}"]
             return result
-
-    def create_preview_vbscript(self, vbs_path):
-        """Create a preview-only VBScript for advanced area scanning"""
-        vbs_content = '''
-' Word Advanced Preview Script - READ ONLY
-Dim args, filePath, searchText, caseSensitive
-Set args = WScript.Arguments
-
-If args.Count < 3 Then
-    WScript.Echo "Usage: script.vbs <filepath> <searchtext> <casesensitive>"
-    WScript.Quit 1
-End If
-
-filePath = args(0)
-searchText = args(1)
-caseSensitive = CBool(args(2))
-
-Dim wordApp, doc
-Set wordApp = CreateObject("Word.Application")
-wordApp.Visible = False
-wordApp.DisplayAlerts = False
-
-On Error Resume Next
-Set doc = wordApp.Documents.Open(filePath, , True) ' Read-only
-If Err.Number <> 0 Then
-    WScript.Echo "Error opening document"
-    wordApp.Quit
-    WScript.Quit 1
-End If
-
-Dim shapesCount, headersCount, footersCount
-shapesCount = 0
-headersCount = 0
-footersCount = 0
-
-' Count in shapes
-For Each shape In doc.Shapes
-    If shape.HasTextFrame Then
-        If shape.TextFrame.HasText Then
-            Dim shapeText
-            shapeText = shape.TextFrame.TextRange.Text
-            If caseSensitive Then
-                shapesCount = shapesCount + CountOccurrences(shapeText, searchText, True)
-            Else
-                shapesCount = shapesCount + CountOccurrences(shapeText, searchText, False)
-            End If
-        End If
-    End If
-Next
-
-' Count in headers and footers
-For Each section In doc.Sections
-    ' Headers
-    For i = 1 To 3
-        If section.Headers(i).Exists Then
-            Dim headerText
-            headerText = section.Headers(i).Range.Text
-            If caseSensitive Then
-                headersCount = headersCount + CountOccurrences(headerText, searchText, True)
-            Else
-                headersCount = headersCount + CountOccurrences(headerText, searchText, False)
-            End If
-        End If
-    Next
-    
-    ' Footers
-    For i = 1 To 3
-        If section.Footers(i).Exists Then
-            Dim footerText
-            footerText = section.Footers(i).Range.Text
-            If caseSensitive Then
-                footersCount = footersCount + CountOccurrences(footerText, searchText, True)
-            Else
-                footersCount = footersCount + CountOccurrences(footerText, searchText, False)
-            End If
-        End If
-    Next
-Next
-
-WScript.Echo "SHAPES: " & shapesCount & " matches"
-WScript.Echo "HEADERS: " & headersCount & " matches"
-WScript.Echo "FOOTERS: " & footersCount & " matches"
-
-doc.Close False
-wordApp.Quit
-
-Function CountOccurrences(text, searchFor, caseSensitive)
-    If caseSensitive Then
-        CountOccurrences = (Len(text) - Len(Replace(text, searchFor, ""))) / Len(searchFor)
-    Else
-        CountOccurrences = (Len(text) - Len(Replace(LCase(text), LCase(searchFor), ""))) / Len(searchFor)
-    End If
-End Function
-'''
-        
-        try:
-            with open(vbs_path, 'w', encoding='utf-8') as f:
-                f.write(vbs_content)
-        except Exception as e:
-            pass  # If we can't create it, advanced preview won't work
+        finally:
+            try:
+                if doc:
+                    doc.Close(False)
+            except Exception:
+                pass
+            if own_word_app:
+                try:
+                    word_app.ScreenUpdating = True
+                    word_app.Quit()
+                except Exception:
+                    pass
 
     def show_comprehensive_preview_results(self, results, search_text, replace_text, 
                                          total_matches, files_with_matches, 
-                                         case_sensitive, advanced_available):
+                                         case_sensitive):
         """Show comprehensive preview results"""
         case_info = " (case sensitive)" if case_sensitive else " (case insensitive)"
 
@@ -1296,11 +1597,7 @@ End Function
         message += f"🎯 Complete Analysis: {total_matches} total match(es) found\n\n"
         message += f"📊 Summary:\n"
         message += f"Files analyzed: {len(results)}\n"
-
-        if advanced_available:
-            message += f"Total matches: {total_matches} (in {files_with_matches} files)\n"
-        else:
-            message += f"Analysis not available (VBScript missing)\n"
+        message += f"Total matches: {total_matches} (in {files_with_matches} files)\n"
 
         
         message += f"Search text: '{search_text[:40]}{'...' if len(search_text) > 40 else ''}'\n"
@@ -1331,46 +1628,75 @@ End Function
         
         self.show_scrollable_results(message, "Advanced Preview results")
 
-    def replace_in_paragraph_advanced(self, paragraph, search_text, replace_text, case_sensitive=False):
+    def replace_in_paragraph_advanced(self, paragraph, search_text, replace_text, case_sensitive=False, use_regex=False, whole_word=False):
         """Replace text in a paragraph that may span multiple runs"""
+        # Strip invisible formatting characters from runs before matching
+        for run in paragraph.runs:
+            cleaned = self._strip_invisible_chars(run.text)
+            if cleaned != run.text:
+                run.text = cleaned
+        
         paragraph_text = paragraph.text
         
-        # Check for matches based on case sensitivity
-        if case_sensitive:
-            if search_text not in paragraph_text:
+        # If whole_word and not regex, use \b boundaries internally
+        effective_regex = use_regex
+        effective_search = search_text
+        if whole_word and not use_regex:
+            effective_search = r'\b' + re.escape(search_text) + r'\b'
+            effective_regex = True
+        
+        # Count matches
+        if effective_regex:
+            try:
+                flags = 0 if case_sensitive else re.IGNORECASE
+                replacements = len(re.findall(effective_search, paragraph_text, flags))
+            except re.error:
                 return 0
-            replacements = paragraph_text.count(search_text)
+            if replacements == 0:
+                return 0
         else:
-            if search_text.lower() not in paragraph_text.lower():
-                return 0
-            replacements = paragraph_text.lower().count(search_text.lower())
+            if case_sensitive:
+                if search_text not in paragraph_text:
+                    return 0
+                replacements = paragraph_text.count(search_text)
+            else:
+                if search_text.lower() not in paragraph_text.lower():
+                    return 0
+                replacements = paragraph_text.lower().count(search_text.lower())
         
         # If the search text is contained within a single run, use simple replacement
         for run in paragraph.runs:
             run_text = run.text
-            if case_sensitive:
+            if effective_regex:
+                try:
+                    flags = 0 if case_sensitive else re.IGNORECASE
+                    if re.search(effective_search, run_text, flags):
+                        run.text = re.sub(effective_search, replace_text, run_text, flags=flags)
+                        return replacements
+                except re.error:
+                    return 0
+            elif case_sensitive:
                 if search_text in run_text:
                     run.text = run_text.replace(search_text, replace_text)
                     return replacements
             else:
                 if search_text.lower() in run_text.lower():
-                    # Case insensitive replacement - need to preserve original case positions
                     pattern = re.escape(search_text)
                     run.text = re.sub(pattern, replace_text, run_text, flags=re.IGNORECASE)
                     return replacements
         
         # If we get here, the text spans multiple runs - rebuild the paragraph
-        if case_sensitive:
-            if search_text in paragraph_text:
-                new_paragraph_text = paragraph_text.replace(search_text, replace_text)
-            else:
+        if effective_regex:
+            try:
+                flags = 0 if case_sensitive else re.IGNORECASE
+                new_paragraph_text = re.sub(effective_search, replace_text, paragraph_text, flags=flags)
+            except re.error:
                 return 0
+        elif case_sensitive:
+            new_paragraph_text = paragraph_text.replace(search_text, replace_text)
         else:
-            if search_text.lower() in paragraph_text.lower():
-                pattern = re.escape(search_text)
-                new_paragraph_text = re.sub(pattern, replace_text, paragraph_text, flags=re.IGNORECASE)
-            else:
-                return 0
+            pattern = re.escape(search_text)
+            new_paragraph_text = re.sub(pattern, replace_text, paragraph_text, flags=re.IGNORECASE)
         
         # Clear all runs and add new text to first run
         for run in paragraph.runs:
@@ -1390,6 +1716,17 @@ End Function
 
 
 #########PART 3B######
+    def _replace_in_table(self, table, search_text, replace_text, case_sensitive, use_regex=False, whole_word=False):
+        """Replace text in a table, recursing into nested tables"""
+        count = 0
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    count += self.replace_in_paragraph_advanced(paragraph, search_text, replace_text, case_sensitive, use_regex, whole_word)
+                for nested_table in cell.tables:
+                    count += self._replace_in_table(nested_table, search_text, replace_text, case_sensitive, use_regex, whole_word)
+        return count
+
     def replace_text_in_documents(self, close_after=False):
         """Perform the actual text replacement across all files - Enhanced results"""
         if not self.file_paths:
@@ -1403,13 +1740,24 @@ End Function
             messagebox.showwarning("Warning", "Please enter text to search for.")
             return False
         
+        use_regex = self.regex_var.get()
+        
+        # Validate regex pattern
+        if use_regex:
+            try:
+                re.compile(search_for)
+            except re.error as e:
+                messagebox.showerror("Invalid Regex", f"Invalid regex pattern:\n{str(e)}")
+                return False
+        
         # Confirm action
         file_count = len(self.file_paths)
         case_sensitive = self.case_sensitive_var.get()
         case_info = " (case sensitive)" if case_sensitive else " (case insensitive)"
+        regex_info = " [REGEX]" if use_regex else ""
         action_text = "replace all occurrences and close the application" if close_after else "replace all occurrences"
         if not messagebox.askyesno("Confirm", 
-                                  f"This will {action_text} in {file_count} file(s){case_info}.\n\nContinue?"):
+                                  f"This will {action_text} in {file_count} file(s){case_info}{regex_info}.\n\nContinue?"):
             return False
         
         try:
@@ -1440,17 +1788,15 @@ End Function
                     # Process the document
                     doc = Document(file_path)
                     file_replacements = 0
+                    whole_word = self.whole_word_var.get()
                     
                     # Replace in paragraphs
                     for paragraph in doc.paragraphs:
-                        file_replacements += self.replace_in_paragraph_advanced(paragraph, search_for, replace_with, case_sensitive)
+                        file_replacements += self.replace_in_paragraph_advanced(paragraph, search_for, replace_with, case_sensitive, use_regex, whole_word)
                     
-                    # Replace in tables
+                    # Replace in tables (including nested tables)
                     for table in doc.tables:
-                        for row in table.rows:
-                            for cell in row.cells:
-                                for paragraph in cell.paragraphs:
-                                    file_replacements += self.replace_in_paragraph_advanced(paragraph, search_for, replace_with, case_sensitive)
+                        file_replacements += self._replace_in_table(table, search_for, replace_with, case_sensitive, use_regex, whole_word)
                     
                     # Save the document
                     doc.save(file_path)
@@ -1478,6 +1824,10 @@ End Function
             
             self.progress_frame.pack_forget()
             self.status_label.config(text="Replacement completed!", fg="green")
+            
+            # Refresh text cache so live counter reflects the updated files
+            self._refresh_text_cache()
+            self._schedule_live_count()
             
             # Show enhanced results instead of simple messagebox
             self.show_replace_all_results(all_results, search_for, replace_with, total_replacements, 
@@ -1555,15 +1905,29 @@ End Function
             # Normal scrollable results
             self.show_scrollable_results(message, "Standard Replace results")
 
-    # NEW: Advanced Replace with VBScript Integration + Hidden CMD Window 🚀
+    # Advanced Replace with Word COM Automation
     def advanced_replace_with_vba(self):
-        """Advanced replace using VBScript for ALL document areas - WITH HIDDEN CMD"""
+        """Advanced replace using Word COM automation for ALL document areas"""
         if not self.file_paths:
             messagebox.showwarning("Warning", "Please add at least one Word document.")
             return
+        
+        if not HAS_WIN32COM:
+            messagebox.showerror("Error", 
+                "Advanced replace requires the 'pywin32' package.\n\n"
+                "Install it with: pip install pywin32")
+            return
+        
+        if self.regex_var.get():
+            messagebox.showinfo("Regex Not Supported", 
+                "Regex is only supported with Standard Replace.\n\n"
+                "Advanced Replace uses Word's native Find & Replace engine\n"
+                "which does not support Python regex syntax.\n\n"
+                "Please uncheck 'Regex' or use Standard Replace instead.")
+            return
             
-        search_for = self.get_processed_search_text()    # CHANGED: Use processed text
-        replace_with = self.get_processed_replace_text() # CHANGED: Use processed text
+        search_for = self.get_processed_search_text()
+        replace_with = self.get_processed_replace_text()
         
         if not search_for:
             messagebox.showwarning("Warning", "Please enter text to search for.")
@@ -1581,15 +1945,8 @@ End Function
                                   "Continue?"):
             return
         
+        word_app = None
         try:
-            # Get the directory where the Python script is located
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            vbs_path = os.path.join(script_dir, "word_advanced_replace.vbs")
-            
-            if not os.path.exists(vbs_path):
-                messagebox.showerror("Error", f"VBScript not found: {vbs_path}\n\nPlease make sure word_advanced_replace.vbs is in the same folder as this Python script.")
-                return
-            
             self.status_label.config(text="Processing advanced replacements...", fg="orange")
             self.progress_frame.pack(fill=tk.X, pady=(10, 0))
             self.root.update()
@@ -1599,6 +1956,12 @@ End Function
             successful_files = 0
             errors = []
             
+            # Open Word once for all files
+            word_app = win32com.client.Dispatch("Word.Application")
+            word_app.Visible = False
+            word_app.DisplayAlerts = False
+            word_app.ScreenUpdating = False
+            
             for i, file_path in enumerate(self.file_paths):
                 # Update progress
                 progress_percent = int((i / file_count) * 100)
@@ -1606,6 +1969,7 @@ End Function
                 self.progress_percent_label.config(text=f"Progress: {progress_percent}%")
                 self.root.update()
                 
+                doc = None
                 try:
                     # Create backup if requested
                     if self.create_backup_var.get():
@@ -1613,87 +1977,171 @@ End Function
                         import shutil
                         shutil.copy2(file_path, backup_path)
                     
-                    # Call VBScript with HIDDEN CMD WINDOW
                     full_path = os.path.abspath(file_path)
+                    doc = word_app.Documents.Open(full_path)
                     
-                    # HIDE CMD WINDOW - This is the key improvement!
-                    startupinfo = subprocess.STARTUPINFO()
-                    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                    startupinfo.wShowWindow = subprocess.SW_HIDE
-
-                    # Pass case sensitivity to VBScript
-                    case_flag = "1" if case_sensitive else "0"
+                    file_replacements = 0
+                    details = []
                     
-                    result = subprocess.run([
-                        'cscript', '//NoLogo', vbs_path, full_path, search_for, replace_with, case_flag
-                    ], capture_output=True, text=True, cwd=script_dir,
-                       startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW)
+                    # Pre-cache shape ranges for O(n) hyperlink-in-shape check
+                    shape_ranges = self._build_shape_ranges(doc)
+                    whole_word = self.whole_word_var.get()
                     
-                    if result.returncode == 0:
-                        # Parse successful output - ENHANCED to include all areas
-                        output_lines = result.stdout.strip().split('\n')
-                        file_replacements = 0
-                        details = []
-                        
-                        for line in output_lines:
-                            if "SHAPES:" in line:
-                                count = int(line.split(':')[1].split()[0])
-                                details.append(f"  📦 Shapes: {count} replacement(s)")
-                                file_replacements += count
-                            elif "HEADERS:" in line:
-                                count = int(line.split(':')[1].split()[0])
-                                details.append(f"  📄 Headers: {count} replacement(s)")
-                                file_replacements += count
-                            elif "FOOTERS:" in line:
-                                count = int(line.split(':')[1].split()[0])
-                                details.append(f"  📄 Footers: {count} replacement(s)")
-                                file_replacements += count
-                            elif "FOOTNOTES:" in line:
-                                count = int(line.split(':')[1].split()[0])
-                                details.append(f"  📝 Footnotes: {count} replacement(s)")
-                                file_replacements += count
-                            elif "ENDNOTES:" in line:
-                                count = int(line.split(':')[1].split()[0])
-                                details.append(f"  📝 Endnotes: {count} replacement(s)")
-                                file_replacements += count
-                            elif "FORMFIELDS:" in line:
-                                count = int(line.split(':')[1].split()[0])
-                                details.append(f"  📋 Form fields: {count} replacement(s)")
-                                file_replacements += count
-                            elif "HYPERLINKS:" in line:
-                                count = int(line.split(':')[1].split()[0])
-                                details.append(f"  🔗 Hyperlinks: {count} replacement(s)")
-                                file_replacements += count
-                            elif "MAINCONTENT:" in line:
-                                count = int(line.split(':')[1].split()[0])
-                                details.append(f"  📄 Main content: {count} replacement(s)")
-                                file_replacements += count               
-                            elif "RESULT:" in line:
-                                # Get total from result line as backup
-                                total_from_vbs = int(line.split(':')[1].split()[0])
-                                if file_replacements == 0:  # If we didn't parse individual counts
-                                    file_replacements = total_from_vbs
-                        
-                        all_results.append({
-                            'filename': os.path.basename(file_path),
-                            'total': file_replacements,
-                            'details': details if details else ["  ✅ No advanced matches found"]
-                        })
-                        
-                        total_advanced_replacements += file_replacements
-                        successful_files += 1
-                        
-                    else:
-                        # Handle errors
-                        error_msg = result.stderr.strip() if result.stderr else "Unknown VBScript error"
-                        all_results.append({
-                            'filename': os.path.basename(file_path),
-                            'total': 0,
-                            'details': [f"  ❌ Error: {error_msg}"]
-                        })
-                        errors.append(f"{os.path.basename(file_path)}: {error_msg}")
-                        
+                    # Replace in text boxes / shapes via StoryRanges (wdTextFrameStory = 5)
+                    # This catches ALL text boxes regardless of how they were inserted
+                    shape_count = 0
+                    try:
+                        story = doc.StoryRanges(5)  # wdTextFrameStory
+                        while story:
+                            if len(story.Text) > 1:
+                                shape_count += self._find_replace_count(
+                                    story, search_for, replace_with, case_sensitive, whole_word)
+                            try:
+                                story = story.NextStoryRange
+                            except Exception:
+                                break
+                    except Exception:
+                        pass
+                    if shape_count > 0:
+                        details.append(f"  📦 Text boxes: {shape_count} replacement(s)")
+                        file_replacements += shape_count
+                    
+                    # Replace in headers
+                    header_count = 0
+                    for section in doc.Sections:
+                        for idx in range(1, 4):
+                            try:
+                                if section.Headers(idx).Exists:
+                                    if len(section.Headers(idx).Range.Text) > 1:
+                                        header_count += self._find_replace_count(
+                                            section.Headers(idx).Range, search_for, replace_with, case_sensitive, whole_word)
+                            except Exception:
+                                pass
+                    if header_count > 0:
+                        details.append(f"  📄 Headers: {header_count} replacement(s)")
+                        file_replacements += header_count
+                    
+                    # Replace in footers
+                    footer_count = 0
+                    for section in doc.Sections:
+                        for idx in range(1, 4):
+                            try:
+                                if section.Footers(idx).Exists:
+                                    if len(section.Footers(idx).Range.Text) > 1:
+                                        footer_count += self._find_replace_count(
+                                            section.Footers(idx).Range, search_for, replace_with, case_sensitive, whole_word)
+                            except Exception:
+                                pass
+                    if footer_count > 0:
+                        details.append(f"  📄 Footers: {footer_count} replacement(s)")
+                        file_replacements += footer_count
+                    
+                    # Replace in footnotes
+                    footnote_count = 0
+                    for footnote in doc.Footnotes:
+                        try:
+                            if len(footnote.Range.Text) > 1:
+                                footnote_count += self._find_replace_count(
+                                    footnote.Range, search_for, replace_with, case_sensitive, whole_word)
+                        except Exception:
+                            pass
+                    if footnote_count > 0:
+                        details.append(f"  📝 Footnotes: {footnote_count} replacement(s)")
+                        file_replacements += footnote_count
+                    
+                    # Replace in endnotes
+                    endnote_count = 0
+                    for endnote in doc.Endnotes:
+                        try:
+                            if len(endnote.Range.Text) > 1:
+                                endnote_count += self._find_replace_count(
+                                    endnote.Range, search_for, replace_with, case_sensitive, whole_word)
+                        except Exception:
+                            pass
+                    if endnote_count > 0:
+                        details.append(f"  📝 Endnotes: {endnote_count} replacement(s)")
+                        file_replacements += endnote_count
+                    
+                    # Replace in form fields (no Find.Execute — direct text manipulation)
+                    form_field_count = 0
+                    for field in doc.FormFields:
+                        try:
+                            if field.Type == 70:  # wdFieldFormTextInput
+                                original_text = field.Result
+                                if len(original_text) > 0:
+                                    # Strip invisible chars for matching AND replacement
+                                    clean_text = self._strip_invisible_chars(original_text)
+                                    occ = self.count_occurrences(clean_text, search_for, case_sensitive, False, whole_word)
+                                    if occ > 0:
+                                        if whole_word:
+                                            pattern = r'\b' + re.escape(search_for) + r'\b'
+                                            flags = 0 if case_sensitive else re.IGNORECASE
+                                            new_text = re.sub(pattern, replace_with, clean_text, flags=flags)
+                                        elif case_sensitive:
+                                            new_text = clean_text.replace(search_for, replace_with)
+                                        else:
+                                            pattern = re.escape(search_for)
+                                            new_text = re.sub(pattern, replace_with, clean_text, flags=re.IGNORECASE)
+                                        field.Result = new_text
+                                        form_field_count += occ
+                        except Exception:
+                            pass
+                    if form_field_count > 0:
+                        details.append(f"  📋 Form fields: {form_field_count} replacement(s)")
+                        file_replacements += form_field_count
+                    
+                    # Replace in main document content using iterative Find (Option A)
+                    # (this covers paragraphs, tables, and inline hyperlink text)
+                    main_content_count = self._find_replace_count(
+                        doc.Content, search_for, replace_with, case_sensitive, whole_word)
+                    
+                    # Count hyperlink replacements that were part of main content
+                    # (for accurate per-area reporting, not for additional replacement)
+                    hyperlink_count = 0
+                    for hyperlink in doc.Hyperlinks:
+                        try:
+                            hl_range = hyperlink.Range
+                            if hl_range is None:
+                                continue
+                            if not self._is_in_shape_ranges(hl_range.Start, hl_range.End, shape_ranges):
+                                display_text = hl_range.Text
+                                if display_text and len(display_text) > 0:
+                                    occ = self.count_occurrences(display_text, replace_with, case_sensitive, False, whole_word) if replace_with else 0
+                                    if occ > 0:
+                                        hyperlink_count += occ
+                        except Exception:
+                            pass
+                    
+                    # Report main content minus hyperlink portion to avoid double-counting
+                    non_hyperlink_main = max(0, main_content_count - hyperlink_count)
+                    if non_hyperlink_main > 0:
+                        details.append(f"  📄 Main content: {non_hyperlink_main} replacement(s)")
+                        file_replacements += non_hyperlink_main
+                    if hyperlink_count > 0:
+                        details.append(f"  🔗 Hyperlinks: {hyperlink_count} replacement(s)")
+                        file_replacements += hyperlink_count
+                    
+                    # Save and close document
+                    doc.Save()
+                    doc.Close()
+                    doc = None
+                    
+                    all_results.append({
+                        'filename': os.path.basename(file_path),
+                        'total': file_replacements,
+                        'details': details if details else ["  ✅ No advanced matches found"]
+                    })
+                    
+                    total_advanced_replacements += file_replacements
+                    successful_files += 1
+                    
                 except Exception as e:
+                    if doc:
+                        try:
+                            doc.Close(False)
+                        except Exception:
+                            pass
+                        doc = None
                     all_results.append({
                         'filename': os.path.basename(file_path),
                         'total': 0,
@@ -1708,12 +2156,23 @@ End Function
             self.progress_frame.pack_forget()
             self.status_label.config(text="Advanced replacement completed!", fg="green")
             
+            # Refresh text cache so live counter reflects the updated files
+            self._refresh_text_cache()
+            self._schedule_live_count()
+            
             # Show results in scrollable window
             self.show_advanced_replace_results(all_results, search_for, replace_with, total_advanced_replacements, successful_files, errors)
             
         except Exception as e:
             self.status_label.config(text="Error occurred", fg="red")
             messagebox.showerror("Error", f"Advanced replace error: {str(e)}")
+        finally:
+            try:
+                if word_app:
+                    word_app.ScreenUpdating = True
+                    word_app.Quit()
+            except Exception:
+                pass
 
     def show_advanced_replace_results(self, results, search_text, replace_text, total_replacements, successful_files, errors):
         """Show advanced replace results in scrollable window"""
