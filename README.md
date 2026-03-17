@@ -86,6 +86,7 @@ If you don't want to hear me talking for too long, just jump to [3:30](https://y
 |----------|--------|
 | `F5` | Preview changes |
 | `Ctrl+Enter` | Standard Replace |
+| `Ctrl+Shift+Enter` | Standard Replace and automatically close the application afterwards |
 | `Shift+Enter` | Advanced Replace |
 | `Ctrl+O` | Add more files |
 | `Shift+Space` | Insert non-breaking space |
