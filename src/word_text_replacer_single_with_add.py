@@ -9,11 +9,6 @@ try:
     HAS_WIN32COM = True
 except ImportError:
     HAS_WIN32COM = False
-try:
-    import windnd
-    HAS_WINDND = True
-except ImportError:
-    HAS_WINDND = False
 
 # Translation table for stripping invisible formatting characters
 # (soft hyphens, zero-width spaces, etc. that Word inserts for formatting)
@@ -241,10 +236,6 @@ class WordTextReplacerSingle:
         # Update the file list display
         self.update_file_list()
         
-        # Setup drag & drop (deferred to ensure window HWND is ready)
-        if HAS_WINDND:
-            self.root.after(100, self._setup_drag_drop)
-        
         # Bind search text changes for live counter
         self.search_text.bind('<KeyRelease>', self._on_search_key_release)
         
@@ -294,34 +285,6 @@ class WordTextReplacerSingle:
         debug_info += f"nbsp in replace text: {processed_replace.count(nbsp_char)}\n\n"
         
         messagebox.showinfo("nbsp check", debug_info)
-
-    # ── Drag & Drop ──
-    def _setup_drag_drop(self):
-        """Setup drag & drop after window is fully realized"""
-        try:
-            windnd.hook_dropfiles(self.root, func=self._on_drop_files)
-        except Exception:
-            pass
-
-    def _on_drop_files(self, file_list):
-        """Handle files dropped onto the window"""
-        added_count = 0
-        for raw in file_list:
-            file_path = raw.decode('utf-8') if isinstance(raw, bytes) else str(raw)
-            if not file_path.lower().endswith(('.docx', '.doc', '.docm')):
-                continue
-            normalized = os.path.normpath(os.path.abspath(file_path))
-            already = any(os.path.normpath(os.path.abspath(ep)) == normalized for ep in self.file_paths)
-            if not already:
-                self.file_paths.append(file_path)
-                added_count += 1
-        if added_count > 0:
-            self._refresh_text_cache()
-            self.update_file_list()
-            self.status_label.config(text=f"Dropped {added_count} file{'s' if added_count != 1 else ''}", fg="blue")
-            self._schedule_live_count()
-        else:
-            self.status_label.config(text="No new Word files in drop (duplicates or wrong type).", fg="orange")
 
     # ── Live Match Counter ──
     def _on_search_key_release(self, event=None):
