@@ -1,2246 +1,1259 @@
-import sys
+"""Bulk Text Replacement for Word — Modern Windows 11 Fluent GUI Application.
+
+Integrates single/multi-document search & replace and multi-field Word template
+batch generation (mail merge) into a unified, accessible, and elegant interface.
+"""
+
+from __future__ import annotations
+
 import os
+import sys
 import tkinter as tk
-from tkinter import messagebox, scrolledtext, filedialog
-from docx import Document
-import re
-try:
-    import win32com.client
-    HAS_WIN32COM = True
-except ImportError:
-    HAS_WIN32COM = False
+from pathlib import Path
+from tkinter import filedialog, messagebox, ttk
 
-# Translation table for stripping invisible formatting characters
-# (soft hyphens, zero-width spaces, etc. that Word inserts for formatting)
-_INVISIBLE_CHARS_TABLE = str.maketrans('', '', '\u00AD\u200B\u200C\u200D\u2060\uFEFF')
+from platform_capabilities import CAPABILITIES
+from replacer_core import (
+    BatchProcessResult,
+    count_occurrences,
+    get_document_text,
+    perform_com_preview,
+    perform_com_replace,
+    perform_standard_preview,
+    perform_standard_replace,
+    preprocess_text_with_nbsp,
+    scan_hyperlinks,
+    strip_invisible_chars,
+)
+from template_merge import (
+    ExcelData,
+    MergeResult,
+    build_field_mapping,
+    build_output_filename,
+    extract_template_fields,
+    extract_template_fields_com,
+    generate_batch,
+    load_excel_data,
+    mapped_row_values,
+)
+from ui.fluent_widgets import (
+    FluentCard,
+    FluentStatusBar,
+    GhostButton,
+    PrimaryButton,
+    ResultViewerDialog,
+    ScrollableCardContainer,
+    SecondaryButton,
+    SegmentedNav,
+)
+from ui.theme import THEME, ThemeColors
 
-class WordTextReplacerSingle:
-    def __init__(self, initial_file=None):
-        self.file_paths = []
-        self._text_cache = {}
-        self._live_count_after_id = None
-        if initial_file and os.path.exists(initial_file):
-            self.file_paths.append(initial_file)
-        
+
+class WordTextReplacerApp:
+    """Unified Windows 11 Fluent GUI application for Word Text Replacement and Template Merge."""
+
+    def __init__(self, initial_file: str | None = None):
         self.root = tk.Tk()
-        self.setup_gui()
-        
-        # Build initial text cache
+        self.root.title("Word 批量处理工具 — Bulk Text Replacement for Word")
+        self.root.geometry("920x800")
+        self.root.minsize(760, 620)
+        self.root.configure(bg=THEME.colors.window_bg)
+
+        # State — Text Replace
+        self.file_paths: list[str] = []
+        self._text_cache: dict[str, str] = {}
+        self._live_count_after_id = None
+        self.replace_mode_var = tk.StringVar(value="fast")  # 'fast' or 'full'
+        self.case_sensitive_var = tk.BooleanVar(value=False)
+        self.whole_word_var = tk.BooleanVar(value=False)
+        self.regex_var = tk.BooleanVar(value=False)
+        self.create_backup_var = tk.BooleanVar(value=True)
+
+        # State — Template Merge
+        self.template_path_var = tk.StringVar()
+        self.excel_path_var = tk.StringVar()
+        self.output_dir_var = tk.StringVar()
+        self.filename_rule_var = tk.StringVar(value="{{甲方名称}}-{{乙方名称}}-合同.docx")
+        self.template_use_com_var = tk.BooleanVar(value=False)
+        self.template_replace_empty_var = tk.BooleanVar(value=True)
+        self.template_fields: list[str] = []
+        self.template_excel_data: ExcelData | None = None
+        self.template_mapping: dict[str, str] = {}
+        self._mapping_combobox = None
+
+        if initial_file and os.path.exists(initial_file):
+            self.file_paths.append(os.path.abspath(initial_file))
+
+        self._build_ui()
+        self._setup_keybindings()
+
         if self.file_paths:
             self._refresh_text_cache()
-        
-    def setup_gui(self):
-        self.update_title()
-        self.root.geometry("700x780")
-        self.root.resizable(True, True)
-        
-        # Main frame
-        main_frame = tk.Frame(self.root, padx=20, pady=20)
-        main_frame.pack(fill=tk.BOTH, expand=True)
-        
-        # Header frame with info icon
-        header_frame = tk.Frame(main_frame)
-        header_frame.pack(fill=tk.X, pady=(0, 15))
-        
-        # Invisible spacer to push info icon to the right
-        spacer = tk.Label(header_frame, text="")
-        spacer.pack(side=tk.LEFT, expand=True)
-        
-        # Info icon with tooltip
-        self.info_icon = tk.Label(header_frame, text="?", font=("Arial", 12, "bold"), 
-                                 fg="#666666", cursor="hand2", 
-                                 relief="solid", borderwidth=1, padx=4, pady=2)
-        self.info_icon.pack(side=tk.RIGHT)
-        
-        # Bind hover events for tooltip
-        self.info_icon.bind("<Enter>", self.show_shortcuts_tooltip)
-        self.info_icon.bind("<Leave>", self.hide_shortcuts_tooltip)
-        
-        # File management section
-        files_frame = tk.LabelFrame(main_frame, text="Selected files", 
-                                   font=("Arial", 11, "bold"), padx=10, pady=10)
-        files_frame.pack(fill=tk.X, pady=(0, 15))
-        
-        # File list with scrollbar
-        list_frame = tk.Frame(files_frame)
-        list_frame.pack(fill=tk.BOTH, expand=True)
-        
-        self.file_listbox = tk.Listbox(list_frame, height=4, font=("Arial", 9), selectmode=tk.EXTENDED)
-        scrollbar = tk.Scrollbar(list_frame, orient="vertical")
-        self.file_listbox.config(yscrollcommand=scrollbar.set)
-        scrollbar.config(command=self.file_listbox.yview)
-        
-        # Bind Delete key to remove files when listbox is focused
-        self.file_listbox.bind('<Delete>', self.handle_delete_key)
-        
+            self._update_file_list()
+
+    def _build_ui(self):
+        # 1. Top Bar: App Title + Segmented Navigation + Action tools (Theme, Help)
+        self.top_bar = tk.Frame(self.root, bg=THEME.colors.window_bg, padx=20, pady=12)
+        self.top_bar.pack(fill=tk.X)
+
+        # Left: App Icon & Title
+        title_box = tk.Frame(self.top_bar, bg=THEME.colors.window_bg)
+        title_box.pack(side=tk.LEFT, padx=(0, 24))
+
+        self.app_title = tk.Label(
+            title_box,
+            text="Word 批量工具",
+            font=THEME.font(13, "bold"),
+            fg=THEME.colors.text_primary,
+            bg=THEME.colors.window_bg,
+        )
+        self.app_title.pack(side=tk.LEFT)
+
+        # Middle: Segmented Navigation
+        self.nav = SegmentedNav(
+            self.top_bar,
+            tabs=[("replace", "文本查找替换"), ("merge", "模板批量生成")],
+            on_tab_change=self._on_tab_change,
+        )
+        self.nav.pack(side=tk.LEFT)
+
+        # Right: Tools (Theme Switch, Help)
+        tools_box = tk.Frame(self.top_bar, bg=THEME.colors.window_bg)
+        tools_box.pack(side=tk.RIGHT)
+
+        self.theme_btn = GhostButton(
+            tools_box,
+            text="🌙 深色" if not THEME.is_dark else "☀️ 浅色",
+            command=self._toggle_theme,
+        )
+        self.theme_btn.pack(side=tk.LEFT, padx=(0, 6))
+
+        self.help_btn = GhostButton(
+            tools_box,
+            text="❓ 帮助",
+            command=self._show_help_dialog,
+        )
+        self.help_btn.pack(side=tk.LEFT)
+
+        # 2. Main Content Area: Stacked Views inside Scrollable Container
+        self.content_frame = tk.Frame(self.root, bg=THEME.colors.window_bg)
+        self.content_frame.pack(fill=tk.BOTH, expand=True)
+
+        self.view_replace = self._build_replace_view(self.content_frame)
+        self.view_merge = self._build_merge_view(self.content_frame)
+
+        # Show Replace view initially
+        self.view_replace.pack(fill=tk.BOTH, expand=True)
+
+        # 3. Bottom Status Bar (Shared across all views)
+        self.status_bar = FluentStatusBar(self.root)
+        self.status_bar.pack(fill=tk.X, side=tk.BOTTOM)
+
+    def _on_tab_change(self, tab_id: str):
+        if tab_id == "replace":
+            self.view_merge.pack_forget()
+            self.view_replace.pack(fill=tk.BOTH, expand=True)
+            self._update_replace_status()
+        elif tab_id == "merge":
+            self.view_replace.pack_forget()
+            self.view_merge.pack(fill=tk.BOTH, expand=True)
+            self._update_merge_status()
+
+    # =========================================================================
+    # TAB 1: TEXT REPLACEMENT VIEW
+    # =========================================================================
+
+    def _build_replace_view(self, parent: tk.Widget) -> tk.Widget:
+        container = ScrollableCardContainer(parent)
+        frame = container.scrollable_frame
+        frame.configure(padx=20, pady=8)
+
+        # Card 1: File Management
+        self.card_files = FluentCard(
+            frame,
+            title="已选 Word 文档",
+            subtitle="支持批量添加 .docx / .doc / .docm 文件",
+        )
+        self.card_files.pack(fill=tk.X, pady=(0, 12))
+
+        # Listbox with scrollbar
+        list_container = tk.Frame(self.card_files, bg=THEME.colors.card_bg)
+        list_container.pack(fill=tk.BOTH, expand=True, pady=(4, 8))
+
+        self.file_listbox = tk.Listbox(
+            list_container,
+            height=4,
+            font=THEME.font(9),
+            selectmode=tk.EXTENDED,
+            bg=THEME.colors.entry_bg,
+            fg=THEME.colors.text_primary,
+            highlightbackground=THEME.colors.entry_border,
+            highlightthickness=1,
+            bd=0,
+        )
+        list_scroll = ttk.Scrollbar(list_container, orient="vertical", command=self.file_listbox.yview)
+        self.file_listbox.config(yscrollcommand=list_scroll.set)
         self.file_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        # File management buttons
-        file_buttons_frame = tk.Frame(files_frame)
-        file_buttons_frame.pack(fill=tk.X, pady=(10, 0))
-        
-        add_files_btn = tk.Button(file_buttons_frame, text="Add more files", 
-                                 command=self.add_files,
-                                 bg="#2196f3", fg="white", font=("Arial", 9))
-        add_files_btn.pack(side=tk.LEFT, padx=(0, 5))
-        
-        remove_file_btn = tk.Button(file_buttons_frame, text="Remove selected", 
-                                   command=self.remove_selected_file,
-                                   bg="#ff9800", fg="white", font=("Arial", 9))
-        remove_file_btn.pack(side=tk.LEFT, padx=(0, 5))
-        
-        clear_files_btn = tk.Button(file_buttons_frame, text="Clear all", 
-                                   command=self.clear_all_files,
-                                   bg="#f44336", fg="white", font=("Arial", 9))
-        clear_files_btn.pack(side=tk.LEFT, padx=(0, 5))
-        
-        # NEW: Add hyperlink check button here
-        hyperlink_btn = tk.Button(file_buttons_frame, text="🔗 Hyperlink check", 
-                                 command=self.check_hyperlinks,
-                                 bg="#9c27b0", fg="white", font=("Arial", 9))
-        hyperlink_btn.pack(side=tk.LEFT, padx=(0, 5))
-        
-        # File count label
-        self.file_count_label = tk.Label(file_buttons_frame, text="", 
-                                        font=("Arial", 9), fg="gray")
-        self.file_count_label.pack(side=tk.RIGHT)
-        
-        # Search text section
-        search_header_frame = tk.Frame(main_frame)
-        search_header_frame.pack(fill=tk.X, pady=(0, 5))
-        
-        search_label = tk.Label(search_header_frame, text="Search for:", 
-                               font=("Arial", 11, "bold"))
-        search_label.pack(side=tk.LEFT)
-        
-        paste_search_btn = tk.Button(search_header_frame, text="📋 Paste clipboard", 
-                                    command=self.paste_to_search,
-                                    bg="#e8f5e8", font=("Arial", 9))
-        paste_search_btn.pack(side=tk.RIGHT)
+        list_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.file_listbox.bind("<Delete>", lambda _e: self._remove_selected_files())
 
-        debug_btn = tk.Button(search_header_frame, text="🔍 nbsp check", 
-                             command=self.debug_nbsp_conversion,
-                             bg="#ffeb3b", font=("Arial", 9))
-        debug_btn.pack(side=tk.RIGHT, padx=(10, 5))
-        
-        self.search_text = scrolledtext.ScrolledText(main_frame, height=6, width=70,
-                                                    wrap=tk.WORD, font=("Arial", 10), undo=True)
-        self.search_text.pack(fill=tk.BOTH, expand=True, pady=(0, 15))
-        
-        # Replace text section
-        replace_header_frame = tk.Frame(main_frame)
-        replace_header_frame.pack(fill=tk.X, pady=(0, 5))
-        
-        replace_label = tk.Label(replace_header_frame, text="Replace with:", 
-                                font=("Arial", 11, "bold"))
-        replace_label.pack(side=tk.LEFT)
-        
-        paste_replace_btn = tk.Button(replace_header_frame, text="📋 Paste clipboard", 
-                                     command=self.paste_to_replace,
-                                     bg="#e8f5e8", font=("Arial", 9))
-        paste_replace_btn.pack(side=tk.RIGHT)
-        
-        self.replace_text = scrolledtext.ScrolledText(main_frame, height=6, width=70,
-                                                     wrap=tk.WORD, font=("Arial", 10), undo=True)
-        self.replace_text.pack(fill=tk.BOTH, expand=True, pady=(0, 20))
-        
-        # Options frame
-        options_frame = tk.Frame(main_frame)
-        options_frame.pack(fill=tk.X, pady=(0, 15))
-        
-        # First row of options
-        options_row1 = tk.Frame(options_frame)
-        options_row1.pack(fill=tk.X)
-        
-        self.create_backup_var = tk.BooleanVar(value=False)
-        backup_checkbox = tk.Checkbutton(options_row1, text="Create backup files (.backup)", 
-                                        variable=self.create_backup_var, font=("Arial", 10))
-        backup_checkbox.pack(side=tk.LEFT)
-        
-        # Second row of options
-        options_row2 = tk.Frame(options_frame)
-        options_row2.pack(fill=tk.X, pady=(5, 0))
-        
-        self.case_sensitive_var = tk.BooleanVar(value=False)
-        case_checkbox = tk.Checkbutton(options_row2, text="Case sensitive search", 
-                                      variable=self.case_sensitive_var, font=("Arial", 10))
-        case_checkbox.pack(side=tk.LEFT)
-        
-        # Third row of options
-        options_row3 = tk.Frame(options_frame)
-        options_row3.pack(fill=tk.X, pady=(5, 0))
-        
-        self.regex_var = tk.BooleanVar(value=False)
-        regex_checkbox = tk.Checkbutton(options_row3, text="Regex (Standard Replace only)", 
-                                       variable=self.regex_var, font=("Arial", 10))
-        regex_checkbox.pack(side=tk.LEFT)
-        
-        # Fourth row of options
-        options_row4 = tk.Frame(options_frame)
-        options_row4.pack(fill=tk.X, pady=(5, 0))
-        
-        self.whole_word_var = tk.BooleanVar(value=False)
-        whole_word_checkbox = tk.Checkbutton(options_row4, text="Whole word match", 
-                                            variable=self.whole_word_var, font=("Arial", 10))
-        whole_word_checkbox.pack(side=tk.LEFT)
-        
-        # Buttons frame
-        button_frame = tk.Frame(main_frame)
-        button_frame.pack(fill=tk.X, pady=(0, 10))
-        
-        # Preview button
-        preview_btn = tk.Button(button_frame, text="Preview", 
-                               command=self.preview_changes,
-                               bg="#e3f2fd", font=("Arial", 10))
-        preview_btn.pack(side=tk.LEFT, padx=(0, 10))
-        
-        # Standard Replace button
-        self.replace_btn = tk.Button(button_frame, text="Standard Replace", 
-                                    command=self.replace_text_in_documents,
-                                    bg="#4caf50", fg="white", font=("Arial", 10, "bold"))
-        self.replace_btn.pack(side=tk.LEFT, padx=(0, 10))
-        
-        # Advanced Replace button
-        advanced_replace_btn = tk.Button(button_frame, text="Advanced Replace", 
-                                        command=self.advanced_replace_with_vba,
-                                        bg="#ff9800", fg="white", font=("Arial", 10, "bold"))
-        advanced_replace_btn.pack(side=tk.LEFT, padx=(0, 10))
-                
-        # Cancel button
-        cancel_btn = tk.Button(button_frame, text="Close", 
-                              command=self.root.destroy,
-                              bg="#333333", fg="white", font=("Arial", 10))
-        cancel_btn.pack(side=tk.RIGHT)
-        
-        # Progress bar frame (initially hidden)
-        self.progress_frame = tk.Frame(main_frame)
-        self.progress_label = tk.Label(self.progress_frame, text="", font=("Arial", 9))
-        self.progress_label.pack(anchor="w")
-        
-        # Progress percentage label
-        self.progress_percent_label = tk.Label(self.progress_frame, text="", font=("Arial", 9), fg="blue")
-        self.progress_percent_label.pack(anchor="w")
-        
-        # Status label
-        self.status_label = tk.Label(main_frame, text="Ready", fg="green", font=("Arial", 9))
-        self.status_label.pack(anchor="w")
-        
-        # Match counter label (live counting)
-        self.match_counter_label = tk.Label(main_frame, text="", fg="#555555", font=("Arial", 9, "italic"))
-        self.match_counter_label.pack(anchor="w")
-        
-        # Setup keyboard bindings
-        self.setup_keyboard_bindings()
-        
-        # Update the file list display
-        self.update_file_list()
-        
-        # Bind search text changes for live counter
-        self.search_text.bind('<KeyRelease>', self._on_search_key_release)
-        
-        # Also trigger live count when options change
-        self.case_sensitive_var.trace_add('write', lambda *_: self._schedule_live_count())
-        self.regex_var.trace_add('write', lambda *_: self._schedule_live_count())
-        self.whole_word_var.trace_add('write', lambda *_: self._schedule_live_count())
-        
-        # Focus on search field
-        self.search_text.focus()
+        # File operation buttons
+        file_btn_row = tk.Frame(self.card_files, bg=THEME.colors.card_bg)
+        file_btn_row.pack(fill=tk.X)
 
-    # NEW: NBSP Processing Methods
-    def preprocess_text_with_nbsp(self, text):
-        """Convert _nbsp_ placeholders to actual non-breaking spaces"""
-        return text.replace('_nbsp_', '\u00A0')
+        SecondaryButton(file_btn_row, text="+ 添加文件", command=self._add_files).pack(side=tk.LEFT, padx=(0, 6))
+        SecondaryButton(file_btn_row, text="移除所选", command=self._remove_selected_files).pack(side=tk.LEFT, padx=(0, 6))
+        SecondaryButton(file_btn_row, text="清空列表", command=self._clear_all_files).pack(side=tk.LEFT, padx=(0, 6))
+        SecondaryButton(file_btn_row, text="🔗 检查超链接", command=self._check_hyperlinks).pack(side=tk.LEFT, padx=(0, 6))
 
-    def _strip_invisible_chars(self, text):
-        """Remove invisible formatting characters (soft hyphens, zero-width spaces, etc.)"""
-        return text.translate(_INVISIBLE_CHARS_TABLE)
+        self.file_count_badge = tk.Label(
+            file_btn_row,
+            text="0 个文件",
+            font=THEME.font(9),
+            fg=THEME.colors.text_secondary,
+            bg=THEME.colors.card_bg,
+        )
+        self.file_count_badge.pack(side=tk.RIGHT)
 
-    def get_processed_search_text(self):
-        """Get search text with _nbsp_ converted and invisible chars stripped"""
-        raw_text = self.search_text.get("1.0", tk.END).strip()
-        return self._strip_invisible_chars(self.preprocess_text_with_nbsp(raw_text))
+        # Card 2: Find and Replace Inputs
+        self.card_inputs = FluentCard(frame, title="查找与替换")
+        self.card_inputs.pack(fill=tk.X, pady=(0, 12))
 
-    def get_processed_replace_text(self):
-        """Get replace text with _nbsp_ converted to actual non-breaking spaces"""
-        raw_text = self.replace_text.get("1.0", tk.END).strip()
-        return self.preprocess_text_with_nbsp(raw_text)
+        # Search Header
+        search_hdr = tk.Frame(self.card_inputs, bg=THEME.colors.card_bg)
+        search_hdr.pack(fill=tk.X, pady=(0, 4))
+        tk.Label(
+            search_hdr, text="查找内容：", font=THEME.font(10, "bold"), fg=THEME.colors.text_primary, bg=THEME.colors.card_bg
+        ).pack(side=tk.LEFT)
 
-    def debug_nbsp_conversion(self):
-        """Debug method to show _nbsp_ conversion"""
-        raw_search = self.search_text.get("1.0", tk.END).strip()
-        processed_search = self.get_processed_search_text()
-        raw_replace = self.replace_text.get("1.0", tk.END).strip()
-        processed_replace = self.get_processed_replace_text()
-        
-        # Define the NBSP character outside the f-string
-        nbsp_char = '\u00A0'
-        
-        debug_info = "nbsp found:\n\n"
-        debug_info += f"Raw search text: '{raw_search}'\n"
-        debug_info += f"Processed search text: '{processed_search}'\n"
-        debug_info += f"nbsp in search text: {processed_search.count(nbsp_char)}\n\n"
-        debug_info += f"Raw replace text: '{raw_replace}'\n"
-        debug_info += f"Processed replace text: '{processed_replace}'\n"
-        debug_info += f"nbsp in replace text: {processed_replace.count(nbsp_char)}\n\n"
-        
-        messagebox.showinfo("nbsp check", debug_info)
+        GhostButton(search_hdr, text="📋 粘贴", command=self._paste_to_search).pack(side=tk.RIGHT)
+        GhostButton(search_hdr, text="🔍 NBSP 检查", command=self._debug_nbsp).pack(side=tk.RIGHT, padx=(0, 6))
 
-    # ── Live Match Counter ──
-    def _on_search_key_release(self, event=None):
+        self.search_text = tk.Text(
+            self.card_inputs,
+            height=3,
+            wrap=tk.WORD,
+            font=THEME.font(10),
+            bg=THEME.colors.entry_bg,
+            fg=THEME.colors.text_primary,
+            highlightbackground=THEME.colors.entry_border,
+            highlightthickness=1,
+            bd=0,
+            padx=6,
+            pady=4,
+            undo=True,
+        )
+        self.search_text.pack(fill=tk.X, pady=(0, 8))
+        self.search_text.bind("<KeyRelease>", lambda _e: self._schedule_live_count())
+
+        # Replace Header
+        replace_hdr = tk.Frame(self.card_inputs, bg=THEME.colors.card_bg)
+        replace_hdr.pack(fill=tk.X, pady=(0, 4))
+        tk.Label(
+            replace_hdr, text="替换为：", font=THEME.font(10, "bold"), fg=THEME.colors.text_primary, bg=THEME.colors.card_bg
+        ).pack(side=tk.LEFT)
+
+        GhostButton(replace_hdr, text="📋 粘贴", command=self._paste_to_replace).pack(side=tk.RIGHT)
+
+        self.replace_text = tk.Text(
+            self.card_inputs,
+            height=3,
+            wrap=tk.WORD,
+            font=THEME.font(10),
+            bg=THEME.colors.entry_bg,
+            fg=THEME.colors.text_primary,
+            highlightbackground=THEME.colors.entry_border,
+            highlightthickness=1,
+            bd=0,
+            padx=6,
+            pady=4,
+            undo=True,
+        )
+        self.replace_text.pack(fill=tk.X, pady=(0, 6))
+
+        # Live match metrics
+        self.live_match_lbl = tk.Label(
+            self.card_inputs,
+            text="",
+            font=THEME.font(9, "italic"),
+            fg=THEME.colors.text_secondary,
+            bg=THEME.colors.card_bg,
+        )
+        self.live_match_lbl.pack(anchor="w")
+
+        # Card 3: Processing Options
+        self.card_options = FluentCard(frame, title="处理选项")
+        self.card_options.pack(fill=tk.X, pady=(0, 12))
+
+        # Mode Selection Row
+        mode_row = tk.Frame(self.card_options, bg=THEME.colors.card_bg)
+        mode_row.pack(fill=tk.X, pady=(0, 8))
+
+        tk.Label(
+            mode_row, text="处理方式：", font=THEME.font(10, "bold"), fg=THEME.colors.text_primary, bg=THEME.colors.card_bg
+        ).pack(side=tk.LEFT)
+
+        self.rb_fast = tk.Radiobutton(
+            mode_row,
+            text="快速模式（推荐 — 速度快，适合正文与表格）",
+            variable=self.replace_mode_var,
+            value="fast",
+            font=THEME.font(9),
+            bg=THEME.colors.card_bg,
+            fg=THEME.colors.text_primary,
+            activebackground=THEME.colors.card_bg,
+            command=self._on_replace_mode_changed,
+        )
+        self.rb_fast.pack(side=tk.LEFT, padx=(8, 12))
+
+        com_state = tk.NORMAL if CAPABILITIES.has_word_com else tk.DISABLED
+        com_hint = "" if CAPABILITIES.has_word_com else "（需 Windows 与 Microsoft Word）"
+        self.rb_full = tk.Radiobutton(
+            mode_row,
+            text=f"完整模式{com_hint}（保留超链接/形状/页眉页脚）",
+            variable=self.replace_mode_var,
+            value="full",
+            state=com_state,
+            font=THEME.font(9),
+            bg=THEME.colors.card_bg,
+            fg=THEME.colors.text_primary if CAPABILITIES.has_word_com else THEME.colors.text_placeholder,
+            activebackground=THEME.colors.card_bg,
+            command=self._on_replace_mode_changed,
+        )
+        self.rb_full.pack(side=tk.LEFT)
+
+        # Checkboxes row 1
+        opts_row1 = tk.Frame(self.card_options, bg=THEME.colors.card_bg)
+        opts_row1.pack(fill=tk.X, pady=(0, 4))
+
+        self.cb_backup = tk.Checkbutton(
+            opts_row1,
+            text="创建备份文件 (.backup)",
+            variable=self.create_backup_var,
+            font=THEME.font(9),
+            bg=THEME.colors.card_bg,
+            fg=THEME.colors.text_primary,
+            activebackground=THEME.colors.card_bg,
+        )
+        self.cb_backup.pack(side=tk.LEFT, padx=(0, 16))
+
+        self.cb_case = tk.Checkbutton(
+            opts_row1,
+            text="区分大小写",
+            variable=self.case_sensitive_var,
+            font=THEME.font(9),
+            bg=THEME.colors.card_bg,
+            fg=THEME.colors.text_primary,
+            activebackground=THEME.colors.card_bg,
+            command=self._schedule_live_count,
+        )
+        self.cb_case.pack(side=tk.LEFT, padx=(0, 16))
+
+        self.cb_word = tk.Checkbutton(
+            opts_row1,
+            text="全字匹配",
+            variable=self.whole_word_var,
+            font=THEME.font(9),
+            bg=THEME.colors.card_bg,
+            fg=THEME.colors.text_primary,
+            activebackground=THEME.colors.card_bg,
+            command=self._schedule_live_count,
+        )
+        self.cb_word.pack(side=tk.LEFT, padx=(0, 16))
+
+        self.cb_regex = tk.Checkbutton(
+            opts_row1,
+            text="正则表达式（仅限快速模式）",
+            variable=self.regex_var,
+            font=THEME.font(9),
+            bg=THEME.colors.card_bg,
+            fg=THEME.colors.text_primary,
+            activebackground=THEME.colors.card_bg,
+            command=self._schedule_live_count,
+        )
+        self.cb_regex.pack(side=tk.LEFT)
+
+        # Action execution bar (Sticky at card bottom)
+        action_bar = tk.Frame(frame, bg=THEME.colors.window_bg)
+        action_bar.pack(fill=tk.X, pady=(4, 16))
+
+        SecondaryButton(action_bar, text="预览更改", command=self._preview_replace).pack(side=tk.LEFT)
+        self.btn_start_replace = PrimaryButton(action_bar, text="开始替换", command=self._start_replace)
+        self.btn_start_replace.pack(side=tk.RIGHT)
+
+        return container
+
+    def _on_replace_mode_changed(self):
+        if self.replace_mode_var.get() == "full":
+            self.regex_var.set(False)
+            self.cb_regex.config(state=tk.DISABLED)
+        else:
+            self.cb_regex.config(state=tk.NORMAL)
         self._schedule_live_count()
 
-    def _schedule_live_count(self):
-        if self._live_count_after_id is not None:
-            self.root.after_cancel(self._live_count_after_id)
-        self._live_count_after_id = self.root.after(400, self._do_live_count)
+    # =========================================================================
+    # TAB 2: TEMPLATE MERGE VIEW (3-STEP WORKFLOW)
+    # =========================================================================
+
+    def _build_merge_view(self, parent: tk.Widget) -> tk.Widget:
+        container = ScrollableCardContainer(parent)
+        frame = container.scrollable_frame
+        frame.configure(padx=20, pady=8)
+
+        # Step 1 Card: Data Source Selection
+        self.card_step1 = FluentCard(
+            frame,
+            title="步骤 1：选择数据源与规则",
+            subtitle="指定 Word 模板、Excel 数据源与输出文件名",
+        )
+        self.card_step1.pack(fill=tk.X, pady=(0, 12))
+
+        # Grid rows for path inputs
+        s1_grid = tk.Frame(self.card_step1, bg=THEME.colors.card_bg)
+        s1_grid.pack(fill=tk.X, pady=(4, 0))
+
+        # Row 0: Word Template
+        tk.Label(s1_grid, text="Word 模板：", font=THEME.font(9), fg=THEME.colors.text_primary, bg=THEME.colors.card_bg).grid(
+            row=0, column=0, sticky="w", pady=4
+        )
+        self.ent_template = tk.Entry(
+            s1_grid,
+            textvariable=self.template_path_var,
+            font=THEME.font(9),
+            bg=THEME.colors.entry_bg,
+            fg=THEME.colors.text_primary,
+            highlightbackground=THEME.colors.entry_border,
+            highlightthickness=1,
+            bd=0,
+        )
+        self.ent_template.grid(row=0, column=1, sticky="ew", padx=8, pady=4)
+        SecondaryButton(s1_grid, text="浏览…", command=self._browse_template).grid(row=0, column=2, sticky="ew", pady=4)
+
+        # Row 1: Excel Data
+        tk.Label(s1_grid, text="Excel 数据：", font=THEME.font(9), fg=THEME.colors.text_primary, bg=THEME.colors.card_bg).grid(
+            row=1, column=0, sticky="w", pady=4
+        )
+        self.ent_excel = tk.Entry(
+            s1_grid,
+            textvariable=self.excel_path_var,
+            font=THEME.font(9),
+            bg=THEME.colors.entry_bg,
+            fg=THEME.colors.text_primary,
+            highlightbackground=THEME.colors.entry_border,
+            highlightthickness=1,
+            bd=0,
+        )
+        self.ent_excel.grid(row=1, column=1, sticky="ew", padx=8, pady=4)
+        SecondaryButton(s1_grid, text="浏览…", command=self._browse_excel).grid(row=1, column=2, sticky="ew", pady=4)
+
+        # Row 2: Output Folder
+        tk.Label(s1_grid, text="输出文件夹：", font=THEME.font(9), fg=THEME.colors.text_primary, bg=THEME.colors.card_bg).grid(
+            row=2, column=0, sticky="w", pady=4
+        )
+        self.ent_output = tk.Entry(
+            s1_grid,
+            textvariable=self.output_dir_var,
+            font=THEME.font(9),
+            bg=THEME.colors.entry_bg,
+            fg=THEME.colors.text_primary,
+            highlightbackground=THEME.colors.entry_border,
+            highlightthickness=1,
+            bd=0,
+        )
+        self.ent_output.grid(row=2, column=1, sticky="ew", padx=8, pady=4)
+        SecondaryButton(s1_grid, text="浏览…", command=self._browse_output_dir).grid(row=2, column=2, sticky="ew", pady=4)
+
+        # Row 3: Filename rule
+        tk.Label(s1_grid, text="命名规则：", font=THEME.font(9), fg=THEME.colors.text_primary, bg=THEME.colors.card_bg).grid(
+            row=3, column=0, sticky="w", pady=4
+        )
+        self.ent_fn_rule = tk.Entry(
+            s1_grid,
+            textvariable=self.filename_rule_var,
+            font=THEME.font(9),
+            bg=THEME.colors.entry_bg,
+            fg=THEME.colors.text_primary,
+            highlightbackground=THEME.colors.entry_border,
+            highlightthickness=1,
+            bd=0,
+        )
+        self.ent_fn_rule.grid(row=3, column=1, sticky="ew", padx=8, pady=4)
+        SecondaryButton(s1_grid, text="🔍 扫描并匹配", command=self._scan_and_match_template).grid(
+            row=3, column=2, sticky="ew", pady=4
+        )
+
+        s1_grid.columnconfigure(1, weight=1)
+
+        # Step 2 Card: Field Mapping
+        self.card_step2 = FluentCard(
+            frame,
+            title="步骤 2：字段映射",
+            subtitle="双击 Excel 列或选择对应字段完成匹配",
+        )
+        self.card_step2.pack(fill=tk.X, pady=(0, 12))
+
+        tree_container = tk.Frame(self.card_step2, bg=THEME.colors.card_bg)
+        tree_container.pack(fill=tk.BOTH, expand=True, pady=(4, 6))
+
+        self.tree_mapping = ttk.Treeview(
+            tree_container,
+            columns=("variable", "column", "status"),
+            show="headings",
+            height=6,
+        )
+        self.tree_mapping.heading("variable", text="Word 模板变量")
+        self.tree_mapping.heading("column", text="对应 Excel 列（双击修改）")
+        self.tree_mapping.heading("status", text="匹配状态")
+        self.tree_mapping.column("variable", width=280)
+        self.tree_mapping.column("column", width=260)
+        self.tree_mapping.column("status", width=100, anchor="center")
+        self.tree_mapping.tag_configure("missing", foreground=THEME.colors.error)
+        self.tree_mapping.tag_configure("matched", foreground=THEME.colors.success)
+
+        tree_scroll = ttk.Scrollbar(tree_container, orient="vertical", command=self.tree_mapping.yview)
+        self.tree_mapping.configure(yscrollcommand=tree_scroll.set)
+        self.tree_mapping.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        tree_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.tree_mapping.bind("<Double-1>", self._edit_mapping_cell)
+
+        self.mapping_summary_lbl = tk.Label(
+            self.card_step2,
+            text="请先选择 Word 模板与 Excel 数据并点击“扫描并匹配”。",
+            font=THEME.font(9),
+            fg=THEME.colors.text_secondary,
+            bg=THEME.colors.card_bg,
+        )
+        self.mapping_summary_lbl.pack(anchor="w")
+
+        # Step 3 Card: Options, Preview and Batch Generation
+        self.card_step3 = FluentCard(
+            frame,
+            title="步骤 3：预览并批量生成",
+            subtitle="查看前 5 行预览日志并执行批量生成",
+        )
+        self.card_step3.pack(fill=tk.X, pady=(0, 12))
+
+        opts_row = tk.Frame(self.card_step3, bg=THEME.colors.card_bg)
+        opts_row.pack(fill=tk.X, pady=(0, 8))
+
+        com_state = tk.NORMAL if CAPABILITIES.has_word_com else tk.DISABLED
+        tk.Checkbutton(
+            opts_row,
+            text="启用 Word COM 完整模式（支持 .doc、形状与特殊域）",
+            variable=self.template_use_com_var,
+            state=com_state,
+            font=THEME.font(9),
+            bg=THEME.colors.card_bg,
+            fg=THEME.colors.text_primary if CAPABILITIES.has_word_com else THEME.colors.text_placeholder,
+            activebackground=THEME.colors.card_bg,
+        ).pack(side=tk.LEFT, padx=(0, 16))
+
+        tk.Checkbutton(
+            opts_row,
+            text="空字段替换为空文本",
+            variable=self.template_replace_empty_var,
+            font=THEME.font(9),
+            bg=THEME.colors.card_bg,
+            fg=THEME.colors.text_primary,
+            activebackground=THEME.colors.card_bg,
+        ).pack(side=tk.LEFT)
+
+        # Merge Action Bar
+        merge_act_row = tk.Frame(self.card_step3, bg=THEME.colors.card_bg)
+        merge_act_row.pack(fill=tk.X, pady=(0, 8))
+
+        SecondaryButton(merge_act_row, text="预览前 5 行", command=self._preview_template_merge).pack(side=tk.LEFT)
+        self.btn_start_merge = PrimaryButton(merge_act_row, text="开始批量生成", command=self._start_template_merge)
+        self.btn_start_merge.pack(side=tk.RIGHT)
+
+        # Log Text Box
+        log_container = tk.Frame(self.card_step3, bg=THEME.colors.card_bg)
+        log_container.pack(fill=tk.BOTH, expand=True)
+
+        self.merge_log = tk.Text(
+            log_container,
+            height=6,
+            wrap=tk.WORD,
+            font=("Consolas", 9),
+            bg=THEME.colors.log_bg,
+            fg=THEME.colors.log_fg,
+            highlightbackground=THEME.colors.border,
+            highlightthickness=1,
+            bd=0,
+            padx=6,
+            pady=6,
+        )
+        log_scroll = ttk.Scrollbar(log_container, orient="vertical", command=self.merge_log.yview)
+        self.merge_log.configure(yscrollcommand=log_scroll.set)
+        self.merge_log.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.merge_log.config(state=tk.DISABLED)
+
+        return container
+
+    # =========================================================================
+    # THEME TOGGLING & STYLING
+    # =========================================================================
+
+    def _toggle_theme(self):
+        new_mode = THEME.toggle()
+        self.theme_btn.config(text="🌙 深色" if new_mode == "light" else "☀️ 浅色")
+        colors = THEME.colors
+
+        self.root.configure(bg=colors.window_bg)
+        self.top_bar.configure(bg=colors.window_bg)
+        self.app_title.configure(bg=colors.window_bg, fg=colors.text_primary)
+        self.content_frame.configure(bg=colors.window_bg)
+        self.nav.update_theme(colors)
+        self.status_bar.update_theme(colors)
+
+        # Update Text Replace Cards
+        self.card_files.update_theme(colors)
+        self.file_listbox.configure(bg=colors.entry_bg, fg=colors.text_primary, highlightbackground=colors.entry_border)
+        self.file_count_badge.configure(bg=colors.card_bg, fg=colors.text_secondary)
+        self.card_inputs.update_theme(colors)
+        self.search_text.configure(bg=colors.entry_bg, fg=colors.text_primary, highlightbackground=colors.entry_border)
+        self.replace_text.configure(bg=colors.entry_bg, fg=colors.text_primary, highlightbackground=colors.entry_border)
+        self.live_match_lbl.configure(bg=colors.card_bg, fg=colors.text_secondary)
+        self.card_options.update_theme(colors)
+
+        # Update Template Merge Cards
+        self.card_step1.update_theme(colors)
+        self.ent_template.configure(bg=colors.entry_bg, fg=colors.text_primary, highlightbackground=colors.entry_border)
+        self.ent_excel.configure(bg=colors.entry_bg, fg=colors.text_primary, highlightbackground=colors.entry_border)
+        self.ent_output.configure(bg=colors.entry_bg, fg=colors.text_primary, highlightbackground=colors.entry_border)
+        self.ent_fn_rule.configure(bg=colors.entry_bg, fg=colors.text_primary, highlightbackground=colors.entry_border)
+        self.card_step2.update_theme(colors)
+        self.mapping_summary_lbl.configure(bg=colors.card_bg, fg=colors.text_secondary)
+        self.card_step3.update_theme(colors)
+        self.merge_log.configure(bg=colors.log_bg, fg=colors.log_fg, highlightbackground=colors.border)
+
+    # =========================================================================
+    # TEXT REPLACEMENT LOGIC
+    # =========================================================================
+
+    def _get_processed_search(self) -> str:
+        raw = self.search_text.get("1.0", tk.END).rstrip("\n")
+        return preprocess_text_with_nbsp(raw)
+
+    def _get_processed_replace(self) -> str:
+        raw = self.replace_text.get("1.0", tk.END).rstrip("\n")
+        return preprocess_text_with_nbsp(raw)
+
+    def _paste_to_search(self):
+        try:
+            clip = self.root.clipboard_get()
+            self.search_text.delete("1.0", tk.END)
+            self.search_text.insert("1.0", clip)
+            self._schedule_live_count()
+        except tk.TclError:
+            pass
+
+    def _paste_to_replace(self):
+        try:
+            clip = self.root.clipboard_get()
+            self.replace_text.delete("1.0", tk.END)
+            self.replace_text.insert("1.0", clip)
+        except tk.TclError:
+            pass
+
+    def _debug_nbsp(self):
+        text = self.search_text.get("1.0", tk.END).rstrip("\n")
+        nbsp_count = text.count("\u00a0")
+        literal_count = text.count("[NBSP]") + text.count("&nbsp;")
+        messagebox.showinfo(
+            "NBSP 空格检测",
+            f"当前查找框内容字符数：{len(text)}\n"
+            f"不间断空格 (U+00A0)：{nbsp_count} 个\n"
+            f"NBSP 占位符：{literal_count} 个\n\n"
+            "提示：程序在查找和替换时会自动规范化处理不间断空格。",
+            parent=self.root,
+        )
+
+    def _add_files(self):
+        types = [("Word 文档", "*.docx *.docm *.doc"), ("所有文件", "*.*")]
+        selected = filedialog.askopenfilenames(title="选择 Word 文档", filetypes=types)
+        if selected:
+            added = 0
+            for path in selected:
+                abs_path = os.path.abspath(path)
+                if abs_path not in self.file_paths:
+                    self.file_paths.append(abs_path)
+                    added += 1
+            if added > 0:
+                self._refresh_text_cache()
+                self._update_file_list()
+                self._schedule_live_count()
+
+    def _remove_selected_files(self):
+        selected_indices = list(self.file_listbox.curselection())
+        if not selected_indices:
+            return
+        for index in reversed(selected_indices):
+            del self.file_paths[index]
+        self._refresh_text_cache()
+        self._update_file_list()
+        self._schedule_live_count()
+
+    def _clear_all_files(self):
+        if not self.file_paths:
+            return
+        if messagebox.askyesno("确认清空", f"确定要清空列表中的 {len(self.file_paths)} 个文件吗？", parent=self.root):
+            self.file_paths.clear()
+            self._text_cache.clear()
+            self._update_file_list()
+            self._schedule_live_count()
+
+    def _update_file_list(self):
+        self.file_listbox.delete(0, tk.END)
+        for path in self.file_paths:
+            name = os.path.basename(path)
+            try:
+                size_kb = os.path.getsize(path) / 1024
+                size_str = f"{size_kb:.1f} KB" if size_kb < 1024 else f"{size_kb/1024:.1f} MB"
+            except OSError:
+                size_str = "未知大小"
+            self.file_listbox.insert(tk.END, f"{name}  ({size_str}) — {path}")
+
+        count = len(self.file_paths)
+        self.file_count_badge.config(text=f"已选 {count} 个文件")
+        self._update_replace_status()
 
     def _refresh_text_cache(self):
-        """Re-read document text for all current files"""
         self._text_cache.clear()
-        for fp in self.file_paths:
-            try:
-                doc = Document(fp)
-                self._text_cache[fp] = self.get_document_text(doc)
-            except Exception:
-                self._text_cache[fp] = ""
+        for path in self.file_paths:
+            if path.lower().endswith((".docx", ".docm")):
+                try:
+                    from docx import Document
+                    doc = Document(path)
+                    self._text_cache[path] = get_document_text(doc)
+                except Exception:
+                    self._text_cache[path] = ""
+
+    def _schedule_live_count(self):
+        if self._live_count_after_id:
+            self.root.after_cancel(self._live_count_after_id)
+        self._live_count_after_id = self.root.after(200, self._do_live_count)
 
     def _do_live_count(self):
-        """Perform the live count against cached text"""
-        self._live_count_after_id = None
-        search_for = self.get_processed_search_text()
-        if not search_for or not self._text_cache:
-            self.match_counter_label.config(text="")
+        search_for = self._get_processed_search()
+        if not search_for or not self.file_paths:
+            self.live_match_lbl.config(text="")
+            self.status_bar.set_metrics("")
             return
+
         case_sensitive = self.case_sensitive_var.get()
-        use_regex = self.regex_var.get()
+        use_regex = self.regex_var.get() and self.replace_mode_var.get() == "fast"
         whole_word = self.whole_word_var.get()
-        
-        if use_regex:
-            try:
-                re.compile(search_for)
-            except re.error:
-                self.match_counter_label.config(text="Invalid regex", fg="red")
-                return
-        
+
         total = 0
-        files_with = 0
-        for fp, text in self._text_cache.items():
-            c = self.count_occurrences(text, search_for, case_sensitive, use_regex, whole_word)
-            total += c
-            if c > 0:
-                files_with += 1
-        
-        if total > 0:
-            self.match_counter_label.config(
-                text=f"Live: {total} match(es) in {files_with} file(s)  [main content only]",
-                fg="#1565c0")
-        else:
-            self.match_counter_label.config(text="Live: No matches found", fg="#888888")
+        matching_files = 0
+        for path in self.file_paths:
+            text = self._text_cache.get(path, "")
+            if text:
+                occ = count_occurrences(text, search_for, case_sensitive, use_regex, whole_word)
+                if occ > 0:
+                    total += occ
+                    matching_files += 1
 
-    def check_hyperlinks(self):
-        """Check selected files for hyperlinks using python-docx"""
+        msg = f"实时统计：在 {matching_files} 个文件中找到 {total} 处匹配"
+        self.live_match_lbl.config(text=msg)
+        self.status_bar.set_metrics(f"{len(self.file_paths)} 个文件 | {total} 处匹配")
+
+    def _check_hyperlinks(self):
         if not self.file_paths:
-            messagebox.showwarning("Warning", "Please add at least one Word document.")
+            messagebox.showwarning("提示", "请先添加至少一个 Word 文档。", parent=self.root)
             return
-        
-        try:
-            self.status_label.config(text="Checking for hyperlinks...", fg="orange")
-            self.progress_frame.pack(fill=tk.X, pady=(10, 0))
-            self.root.update()
-            
-            hyperlink_results = []
-            total_hyperlinks = 0
-            files_with_hyperlinks = 0
-            
-            for i, file_path in enumerate(self.file_paths):
-                # Update progress
-                progress_percent = int((i / len(self.file_paths)) * 100)
-                self.progress_label.config(text=f"Checking {i+1}/{len(self.file_paths)}: {os.path.basename(file_path)}")
-                self.progress_percent_label.config(text=f"Progress: {progress_percent}%")
-                self.root.update()
-                
-                try:
-                    doc = Document(file_path)
-                    file_hyperlinks = []
-                    file_hyperlink_count = 0
-                    
-                    # Check hyperlinks in paragraphs
-                    for paragraph in doc.paragraphs:
-                        for run in paragraph.runs:
-                            if hasattr(run.element, 'hyperlink') and run.element.hyperlink is not None:
-                                hyperlink = run.element.hyperlink
-                                # Get hyperlink address
-                                if hasattr(hyperlink, 'address') and hyperlink.address:
-                                    file_hyperlinks.append({
-                                        'text': run.text,
-                                        'url': hyperlink.address,
-                                        'location': 'paragraph'
-                                    })
-                                    file_hyperlink_count += 1
-                    
-                    # Check hyperlinks in tables
-                    for table_idx, table in enumerate(doc.tables):
-                        for row_idx, row in enumerate(table.rows):
-                            for cell_idx, cell in enumerate(row.cells):
-                                for paragraph in cell.paragraphs:
-                                    for run in paragraph.runs:
-                                        if hasattr(run.element, 'hyperlink') and run.element.hyperlink is not None:
-                                            hyperlink = run.element.hyperlink
-                                            if hasattr(hyperlink, 'address') and hyperlink.address:
-                                                file_hyperlinks.append({
-                                                    'text': run.text,
-                                                    'url': hyperlink.address,
-                                                    'location': f'table {table_idx+1}, row {row_idx+1}, cell {cell_idx+1}'
-                                                })
-                                                file_hyperlink_count += 1
-                    
-                    # Alternative method: Check relationships for hyperlinks
-                    if hasattr(doc, 'part') and hasattr(doc.part, 'rels'):
-                        for rel in doc.part.rels.values():
-                            if rel.reltype.endswith('/hyperlink'):
-                                # This is a hyperlink relationship
-                                # Try to find the text that uses this relationship
-                                file_hyperlink_count += 1
-                    
-                    hyperlink_results.append({
-                        'filename': os.path.basename(file_path),
-                        'hyperlink_count': file_hyperlink_count,
-                        'hyperlinks': file_hyperlinks[:10],  # Limit to first 10 for display
-                        'total_found': len(file_hyperlinks)
-                    })
-                    
-                    if file_hyperlink_count > 0:
-                        files_with_hyperlinks += 1
-                        total_hyperlinks += file_hyperlink_count
-                        
-                except Exception as e:
-                    hyperlink_results.append({
-                        'filename': os.path.basename(file_path),
-                        'hyperlink_count': 0,
-                        'hyperlinks': [],
-                        'error': str(e)
-                    })
-            
-            # Hide progress
-            self.progress_frame.pack_forget()
-            self.status_label.config(text="Hyperlink check completed!", fg="green")
-            
-            # Show results
-            self.show_hyperlink_results(hyperlink_results, total_hyperlinks, files_with_hyperlinks)
-            
-        except Exception as e:
-            self.progress_frame.pack_forget()
-            self.status_label.config(text="Error occurred", fg="red")
-            messagebox.showerror("Error", f"Error during hyperlink check: {str(e)}")
+        results = scan_hyperlinks(self.file_paths)
+        total_links = sum(r["count"] for r in results)
+        files_with_links = sum(1 for r in results if r["count"] > 0)
 
-    def show_hyperlink_results(self, results, total_hyperlinks, files_with_hyperlinks):
-        """Show hyperlink check results in scrollable window"""
-        message = "-" * 26 + "\n"
-        message += f"🔗 Hyperlink check results\n"
-        message += "-" * 26 + "\n\n"
-        message += f"📊 Summary:\n"
-        message += f"Files analyzed: {len(results)}\n"
-        message += f"Total hyperlinks found: {total_hyperlinks}\n"
-        message += f"Files with hyperlinks: {files_with_hyperlinks}\n\n"
-        message += "=" * 77 + "\n\n"
-        
-        if total_hyperlinks > 0:
-            message += "⚠️  Reminder for hyperlinks:\n"
-            message += "• Standard Replace updates display text but removes the actual link!\n"
-            message += "• Advanced Replace preserves hyperlinks when editing their display text.\n"
-            message += "• If you are not going to replace the display text of a hyperlink, you can still use Standard Replace as it is faster.\n\n"
-            message += "=" * 77 + "\n\n"
-        
-        # Show detailed file results
-        for i, result in enumerate(results, 1):
-            message += f"📁 File {i}: {result['filename']}\n"
-            
-            if 'error' in result:
-                message += f"   ❌ Error: {result['error']}\n"
-            elif result['hyperlink_count'] > 0:
-                message += f"   🔗 Hyperlinks found: {result['hyperlink_count']}\n"
-                
-                # Show sample hyperlinks
-                if result['hyperlinks']:
-                    message += f"   📋 Sample hyperlinks:\n"
-                    for idx, hyperlink in enumerate(result['hyperlinks'][:5], 1):  # Show max 5
-                        text_preview = hyperlink['text'][:30] + "..." if len(hyperlink['text']) > 30 else hyperlink['text']
-                        url_preview = hyperlink['url'][:40] + "..." if len(hyperlink['url']) > 40 else hyperlink['url']
-                        message += f"      {idx}. Text: '{text_preview}'\n"
-                        message += f"         URL: {url_preview}\n"
-                        message += f"         Location: {hyperlink['location']}\n"
-                    
-                    if result['total_found'] > 5:
-                        message += f"      ... and {result['total_found'] - 5} more hyperlinks\n"
-            else:
-                message += f"   ✅ No hyperlinks found\n"
-            
-            message += "\n" + "=" * 77 + "\n\n"
-        
-        if total_hyperlinks < 1:
-            message += "💡 Both Standard and Advanced Replace are safe to use."
-        else:
-            message += "💡 Only use Standard Replace if you are not going to change display texts of hyperlinks."
-
-        self.show_scrollable_results(message, "Hyperlink check results")
-
-    def handle_delete_key(self, event):
-        """Handle Delete key press in file listbox"""
-        self.remove_selected_file()
-        return "break"  # Prevent any other handling
-    
-    def show_shortcuts_tooltip(self, event):
-        """Show shortcuts tooltip on hover - SMART VISIBILITY MANAGEMENT"""
-        # Prevent multiple tooltips - but check if existing one is still valid
-        if hasattr(self, 'tooltip'):
-            try:
-                if self.tooltip.winfo_exists():
-                    return
-            except tk.TclError:
-                # Tooltip was destroyed but attribute still exists
-                del self.tooltip
-
-        # Create tooltip window - COMPLETELY INDEPENDENT
-        self.tooltip = tk.Toplevel()  # Don't pass self.root as parent!
-        self.tooltip.wm_overrideredirect(True)  # Remove window decorations
-        self.tooltip.configure(bg="lightyellow", relief="solid", borderwidth=1)
-        
-        # Make tooltip stay on top but don't make it transient
-        self.tooltip.attributes('-topmost', True)
-        
-        # BIND FOCUS EVENTS TO MAIN WINDOW TO CONTROL TOOLTIP VISIBILITY
-        def on_main_focus_in(event):
-            """Show tooltip when main window gets focus"""
-            if hasattr(self, 'tooltip'):
-                try:
-                    self.tooltip.deiconify()  # Show tooltip
-                except tk.TclError:
-                    pass
-        
-        def on_main_focus_out(event):
-            """Hide tooltip when main window loses focus"""
-            if hasattr(self, 'tooltip'):
-                try:
-                    self.tooltip.withdraw()  # Hide tooltip (but don't destroy)
-                except tk.TclError:
-                    pass
-        
-        # Bind focus events to main window
-        self.root.bind('<FocusIn>', on_main_focus_in, add='+')
-        self.root.bind('<FocusOut>', on_main_focus_out, add='+')
-        
-        # Also bind to window state changes (minimize/restore)
-        def on_window_state_change(event):
-            """Handle window minimize/restore"""
-            if hasattr(self, 'tooltip'):
-                try:
-                    if self.root.state() == 'iconic':  # Minimized
-                        self.tooltip.withdraw()
-                    else:  # Normal or zoomed
-                        self.tooltip.deiconify()
-                except tk.TclError:
-                    pass
-        
-        self.root.bind('<Unmap>', on_window_state_change, add='+')
-        self.root.bind('<Map>', on_window_state_change, add='+')
-        
-        # Create a frame to hold everything
-        main_frame = tk.Frame(self.tooltip, bg="lightyellow")
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
-        # Tooltip content
-        shortcuts_text = """    𝗥𝗲𝗽𝗹𝗮𝗰𝗲𝗺𝗲𝗻𝘁 𝗺𝗲𝘁𝗵𝗼𝗱𝘀 
-    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    Preview:
-    • Shows what will be changed
-
-    Standard Replace:
-    • Handles standard text & tables (fast)
-    • ⚠️ Hyperlinks: Editing the display text of a hyperlink updates the display text, but removes the link.
-
-    Advanced Replace:
-    • Handles all document areas (complete coverage) and handles hyperlinks correctly
-
-    𝗞𝗲𝘆𝗯𝗼𝗮𝗿𝗱 𝘀𝗵𝗼𝗿𝘁𝗰𝘂𝘁𝘀
-    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    Actions:
-    • F5 - Preview
-    • Ctrl+Enter - Standard Replace
-    • Shift+Enter - Advanced Replace
-    
-    Files:
-    • Ctrl+O - Add more files
-    • Delete - Remove selected files (when file list is focused)
-    
-    Navigation:
-    • Ctrl+1 - Focus Search box
-    • Ctrl+2 - Focus Replace box
-    • Tab - Switch between boxes
-
-    Text Editing:
-    • Ctrl+Tab - Add a tab (\\t) in search/replace box
-    • Ctrl+Z - Undo
-    • Ctrl+Y - Redo
-    • Shift+Space - Insert _nbsp_ at cursor position
-
-    Exit:
-    • Escape/Ctrl+Q - Close application
-
-    𝗠𝗶𝘀𝗰𝗲𝗹𝗹𝗮𝗻𝗲𝗼𝘂𝘀
-    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    Non-breaking spaces:
-    • Type '_nbsp_' for non-breaking spaces or use Shift+Space
-    • 🔍 nbsp check - Counts non-breaking spaces in search/replace boxes
-
-    Hyperlinks:
-    • 🔗 Hyperlink check - Checks the selected files for hyperlinks
-
-    Regex:
-    • Supported in Standard Replace/Preview only (Python regex syntax)
-    • Not supported in Advanced Replace/Preview (uses Word's native engine)
-    
-    𝗙𝗼𝗿𝘇𝗮 𝗜𝗻𝘁𝗲𝗿!"""
-        
-        # Create scrollable text widget instead of label
-        text_widget = tk.Text(main_frame, 
-                            font=("Arial", 9), 
-                            bg="lightyellow", 
-                            wrap=tk.WORD,
-                            width=80,  # Set reasonable width
-                            height=30,  # Set reasonable height
-                            relief="flat",
-                            borderwidth=0,
-                            padx=5,
-                            pady=3)
-        
-        # Create scrollbar
-        scrollbar = tk.Scrollbar(main_frame, orient="vertical", command=text_widget.yview)
-        text_widget.config(yscrollcommand=scrollbar.set)
-        
-        # Pack text widget and scrollbar
-        text_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        # Insert text and make read-only
-        text_widget.insert("1.0", shortcuts_text)
-        text_widget.config(state=tk.DISABLED)
-        
-        # SIMPLE BUT EFFECTIVE POSITIONING - STAY NEAR MAIN WINDOW
-        # Get main window bounds
-        main_x = self.root.winfo_rootx()
-        main_y = self.root.winfo_rooty()
-        main_width = self.root.winfo_width()
-        main_height = self.root.winfo_height()
-        
-        # Get icon position
-        icon_x = self.info_icon.winfo_rootx()
-        icon_y = self.info_icon.winfo_rooty()
-        
-        # Set a reasonable tooltip size first
-        self.tooltip.geometry("650x600")  # Fixed size
-        self.tooltip.update_idletasks()
-        
-        tooltip_width = 650
-        tooltip_height = 600
-        
-        # Strategy: Try positions in order of preference, all relative to main window
-        positions_to_try = [
-            # 1. Left of icon (preferred)
-            (icon_x - tooltip_width - 10, icon_y),
-            # 2. Right of main window
-            (main_x + main_width + 10, main_y),
-            # 3. Left of main window
-            (main_x - tooltip_width - 10, main_y),
-            # 4. Above main window
-            (main_x, main_y - tooltip_height - 10),
-            # 5. Below main window
-            (main_x, main_y + main_height + 10),
-            # 6. Centered on main window (last resort)
-            (main_x + (main_width - tooltip_width) // 2, main_y + (main_height - tooltip_height) // 2)
+        lines = [
+            "🔗 文档超链接扫描报告",
+            "=" * 50,
+            f"扫描文件总数：{len(self.file_paths)}",
+            f"含超链接文件：{files_with_links}",
+            f"超链接总数量：{total_links}",
+            "=" * 50,
+            "",
         ]
-        
-        # Find the first position that keeps tooltip reasonably close to main window
-        final_x, final_y = positions_to_try[0]  # Default to first option
-        
-        for test_x, test_y in positions_to_try:
-            # Check if this position keeps tooltip close to main window
-            distance_from_main = abs(test_x - main_x) + abs(test_y - main_y)
-            if distance_from_main < 1000:  # Within reasonable distance
-                final_x, final_y = test_x, test_y
-                break
-        
-        # Ensure tooltip doesn't go off-screen (but prioritize staying near main window)
-        # Only adjust if absolutely necessary
-        if final_x < main_x - 800:  # Too far left
-            final_x = main_x - 400
-        if final_y < main_y - 400:  # Too far up
-            final_y = main_y - 200
-        
-        # Apply final position
-        self.tooltip.geometry(f"650x600+{final_x}+{final_y}")
-        
-        # Add close button in the top-right corner - ONLY WAY TO CLOSE
-        close_btn = tk.Button(main_frame, text="🗙", 
-                            command=self.hide_shortcuts_tooltip_manual,
-                            font=("Arial", 8, "bold"),
-                            bg="lightcoral", fg="white",
-                            width=2, height=1,
-                            relief="flat")
-        close_btn.place(relx=1.0, rely=0.0, anchor="ne", x=-23, y=0)
+        for r in results:
+            lines.append(f"📄 {r['filename']}：{r['count']} 个链接")
+            for url in r["urls"][:5]:
+                lines.append(f"   • {url}")
+            if len(r["urls"]) > 5:
+                lines.append(f"   • ... 以及其他 {len(r['urls']) - 5} 个链接")
+            lines.append("")
 
-    def hide_shortcuts_tooltip(self, event):
-        """Do nothing - tooltip only closes when X is clicked"""
-        pass
+        if total_links > 0:
+            lines.append("💡 建议：若需替换超链接显示文字且保留链接地址，请使用【完整模式】。")
 
-    def hide_shortcuts_tooltip_manual(self):
-        """Manually hide tooltip when close button is clicked"""
-        if hasattr(self, 'tooltip'):
-            try:
-                self.tooltip.destroy()
-            except tk.TclError:
-                pass  # Already destroyed
-            del self.tooltip
+        ResultViewerDialog(
+            self.root,
+            title="超链接检查结果",
+            summary_text=f"共扫描 {len(self.file_paths)} 个文档，发现 {total_links} 处超链接。",
+            details_text="\n".join(lines),
+            is_success=True,
+        )
 
+    def _preview_replace(self):
+        search_for = self._get_processed_search()
+        if not search_for:
+            messagebox.showwarning("提示", "请输入要查找的内容。", parent=self.root)
+            return
+        if not self.file_paths:
+            messagebox.showwarning("提示", "请先添加 Word 文档。", parent=self.root)
+            return
 
+        mode = self.replace_mode_var.get()
+        case_sensitive = self.case_sensitive_var.get()
+        whole_word = self.whole_word_var.get()
+        use_regex = self.regex_var.get() and mode == "fast"
 
-#########END OF PART 1######
+        self.status_bar.set_status("正在生成预览...", "running")
+        self.root.update()
 
-
-
-
-#########PART 2######
-    def setup_keyboard_bindings(self):
-        """Setup custom keyboard bindings"""
-        # Existing text box bindings
-        self.search_text.bind('<Tab>', self.focus_replace_text)
-        self.replace_text.bind('<Tab>', self.focus_search_text)
-        self.search_text.bind('<Control-Tab>', self.insert_tab)
-        self.replace_text.bind('<Control-Tab>', self.insert_tab)
-        self.search_text.bind('<Control-z>', self.undo_search)
-        self.search_text.bind('<Control-y>', self.redo_search)
-        self.replace_text.bind('<Control-z>', self.undo_replace)
-        self.replace_text.bind('<Control-y>', self.redo_replace)
-        self.search_text.bind('<Control-Shift-Z>', self.redo_search)
-        self.replace_text.bind('<Control-Shift-Z>', self.redo_replace)
-
-        # NEW: NBSP shortcut - Shift+Space inserts _nbsp_ at cursor position
-        self.search_text.bind('<Shift-space>', self.insert_nbsp_placeholder)
-        self.replace_text.bind('<Shift-space>', self.insert_nbsp_placeholder)
-        
-        # GLOBAL KEYBOARD SHORTCUTS (bind to root)
-        self.root.bind('<Control-Return>', lambda e: self.replace_text_in_documents())
-        self.root.bind('<F5>', lambda e: self.preview_changes())
-        self.root.bind('<Control-o>', lambda e: self.add_files())
-        self.root.bind('<Control-O>', lambda e: self.add_files())
-        self.root.bind('<Escape>', lambda e: self.root.destroy())
-        self.root.bind('<Control-q>', lambda e: self.root.destroy())
-        self.root.bind('<Control-Q>', lambda e: self.root.destroy())
-        self.root.bind('<Control-Shift-Return>', lambda e: self.replace_and_close())
-        self.root.bind('<Control-Key-1>', lambda e: self.search_text.focus())
-        self.root.bind('<Control-Key-2>', lambda e: self.replace_text.focus())
-        self.root.bind('<Shift-Return>', lambda e: self.advanced_replace_with_vba())
-        
-        # BIND SHORTCUTS TO TEXT WIDGETS TOO (to prevent line breaks)
-        # Search text shortcuts
-        self.search_text.bind('<Control-Return>', self.handle_shortcut_replace)
-        self.search_text.bind('<Control-Shift-Return>', self.handle_shortcut_replace_close)
-        self.search_text.bind('<F5>', self.handle_shortcut_preview)
-        self.search_text.bind('<Control-o>', self.handle_shortcut_add_files)
-        self.search_text.bind('<Control-O>', self.handle_shortcut_add_files)
-        self.search_text.bind('<Escape>', self.handle_shortcut_close)
-        self.search_text.bind('<Control-q>', self.handle_shortcut_close)
-        self.search_text.bind('<Control-Q>', self.handle_shortcut_close)
-        self.search_text.bind('<Shift-Return>', self.handle_shortcut_advanced_replace)
-        
-        # Replace text shortcuts
-        self.replace_text.bind('<Control-Return>', self.handle_shortcut_replace)
-        self.replace_text.bind('<Control-Shift-Return>', self.handle_shortcut_replace_close)
-        self.replace_text.bind('<F5>', self.handle_shortcut_preview)
-        self.replace_text.bind('<Control-o>', self.handle_shortcut_add_files)
-        self.replace_text.bind('<Control-O>', self.handle_shortcut_add_files)
-        self.replace_text.bind('<Escape>', self.handle_shortcut_close)
-        self.replace_text.bind('<Control-q>', self.handle_shortcut_close)
-        self.replace_text.bind('<Control-Q>', self.handle_shortcut_close)
-        self.replace_text.bind('<Shift-Return>', self.handle_shortcut_advanced_replace)
-        
-        # Make sure the window can receive focus for global shortcuts
-        self.root.focus_set()
-    
-    def handle_shortcut_replace(self, event):
-        """Handle Ctrl+Enter shortcut from text widgets"""
-        self.replace_text_in_documents()
-        return "break"  # Prevent line break insertion
-    
-    def handle_shortcut_replace_close(self, event):
-        """Handle Ctrl+Shift+Enter shortcut from text widgets"""
-        self.replace_and_close()
-        return "break"  # Prevent line break insertion
-    
-    def handle_shortcut_preview(self, event):
-        """Handle F5 shortcut from text widgets"""
-        self.preview_changes()
-        return "break"  # Prevent any default behavior
-    
-    def handle_shortcut_add_files(self, event):
-        """Handle Ctrl+O shortcut from text widgets"""
-        self.add_files()
-        return "break"  # Prevent any default behavior
-    
-    def handle_shortcut_close(self, event):
-        """Handle Escape/Ctrl+Q shortcut from text widgets"""
-        self.root.destroy()
-        return "break"  # Prevent any default behavior
-
-    def handle_shortcut_advanced_replace(self, event):
-        """Handle Shift+Enter shortcut from text widgets"""
-        self.advanced_replace_with_vba()
-        return "break"  # Prevent line break insertion
-    
-    def replace_and_close(self):
-        """Replace and close application"""
-        if self.replace_text_in_documents(close_after=True):
-            pass  # The close will be handled in the results window
-    
-    def insert_tab(self, event):
-        """Insert a tab character at cursor position"""
-        widget = event.widget
-        widget.insert(tk.INSERT, '\t')
-        return "break"  # Prevent any other handling
-
-    def insert_nbsp_placeholder(self, event):
-        """Insert _nbsp_ placeholder at cursor position"""
-        widget = event.widget
-        cursor_pos = widget.index(tk.INSERT)
-        widget.insert(cursor_pos, '_nbsp_')
-        return "break"  # Prevent any other handling
-    
-    def focus_replace_text(self, event):
-        """Move focus from search to replace text box"""
-        self.replace_text.focus()
-        return "break"  # Prevent default Tab behavior
-    
-    def focus_search_text(self, event):
-        """Move focus from replace to search text box"""
-        self.search_text.focus()
-        return "break"  # Prevent default Tab behavior
-    
-    def undo_search(self, event):
-        """Undo in search text box"""
         try:
-            self.search_text.edit_undo()
-        except tk.TclError:
-            pass  # No more undo operations
-        return "break"
-    
-    def redo_search(self, event):
-        """Redo in search text box"""
+            if mode == "full":
+                result = perform_com_preview(
+                    self.file_paths, search_for, case_sensitive, whole_word, self.status_bar.show_progress
+                )
+            else:
+                result = perform_standard_preview(
+                    self.file_paths, search_for, case_sensitive, use_regex, whole_word, self.status_bar.show_progress
+                )
+
+            self.status_bar.hide_progress()
+            self.status_bar.set_status("预览完成", "success")
+
+            lines = [
+                f"查找替换预览报告（模式：{'快速模式' if mode == 'fast' else '完整模式'}）",
+                "=" * 60,
+                f"查找内容：{search_for}",
+                f"替换为：{self._get_processed_replace()}",
+                f"匹配总数：{result.total_count} 处（分布于 {result.files_with_matches} 个文件）",
+                "=" * 60,
+                "",
+            ]
+
+            for detail in result.details:
+                lines.append(f"📁 文件：{detail.filename}")
+                lines.append(f"   匹配数量：{detail.total}")
+                for d in detail.details:
+                    lines.append(f"   {d}")
+                if detail.contexts:
+                    lines.append("   📝 匹配上下文样例：")
+                    for ctx in detail.contexts:
+                        lines.append(f"      {ctx}")
+                lines.append("")
+
+            summary = f"在 {len(self.file_paths)} 个文件中找到 {result.total_count} 处匹配（涉及 {result.files_with_matches} 个文件）。"
+            ResultViewerDialog(
+                self.root,
+                title="查找替换预览结果",
+                summary_text=summary,
+                details_text="\n".join(lines),
+                is_success=True,
+            )
+        except Exception as exc:
+            self.status_bar.hide_progress()
+            self.status_bar.set_status("预览失败", "error")
+            messagebox.showerror("预览失败", str(exc), parent=self.root)
+
+    def _start_replace(self):
+        search_for = self._get_processed_search()
+        replace_with = self._get_processed_replace()
+        if not search_for:
+            messagebox.showwarning("提示", "请输入要查找的内容。", parent=self.root)
+            return
+        if not self.file_paths:
+            messagebox.showwarning("提示", "请先添加 Word 文档。", parent=self.root)
+            return
+
+        mode = self.replace_mode_var.get()
+        case_sensitive = self.case_sensitive_var.get()
+        whole_word = self.whole_word_var.get()
+        use_regex = self.regex_var.get() and mode == "fast"
+        create_backup = self.create_backup_var.get()
+
+        mode_name = "快速模式" if mode == "fast" else "完整模式"
+        backup_hint = "（将创建 .backup 备份文件）" if create_backup else "（未勾选备份）"
+        if not messagebox.askyesno(
+            "确认执行替换",
+            f"即将使用【{mode_name}】在 {len(self.file_paths)} 个文档中执行查找替换 {backup_hint}。\n\n"
+            f"查找：{search_for[:40]}\n"
+            f"替换：{replace_with[:40]}\n\n"
+            "是否继续？",
+            parent=self.root,
+        ):
+            return
+
+        self.btn_start_replace.config(state=tk.DISABLED)
+        self.status_bar.set_status("正在执行替换...", "running")
+        self.root.update()
+
         try:
-            self.search_text.edit_redo()
-        except tk.TclError:
-            pass  # No more redo operations
-        return "break"
-    
-    def undo_replace(self, event):
-        """Undo in replace text box"""
-        try:
-            self.replace_text.edit_undo()
-        except tk.TclError:
-            pass  # No more undo operations
-        return "break"
-    
-    def redo_replace(self, event):
-        """Redo in replace text box"""
-        try:
-            self.replace_text.edit_redo()
-        except tk.TclError:
-            pass  # No more redo operations
-        return "break"
-    
-    def paste_to_search(self):
-        """Paste clipboard content to search text box"""
-        try:
-            clipboard_content = self.root.clipboard_get()
-            self.search_text.delete("1.0", tk.END)
-            self.search_text.insert("1.0", clipboard_content)
-            self.status_label.config(text="Pasted clipboard content to search box.", fg="blue")
+            if mode == "full":
+                result = perform_com_replace(
+                    self.file_paths,
+                    search_for,
+                    replace_with,
+                    case_sensitive,
+                    whole_word,
+                    create_backup,
+                    self.status_bar.show_progress,
+                )
+            else:
+                result = perform_standard_replace(
+                    self.file_paths,
+                    search_for,
+                    replace_with,
+                    case_sensitive,
+                    use_regex,
+                    whole_word,
+                    create_backup,
+                    self.status_bar.show_progress,
+                )
+
+            self.status_bar.hide_progress()
+            self._refresh_text_cache()
             self._schedule_live_count()
-        except tk.TclError:
-            self.status_label.config(text="Clipboard is empty or contains non-text data.", fg="orange")
-    
-    def paste_to_replace(self):
-        """Paste clipboard content to replace text box"""
+
+            lines = [
+                f"查找替换执行报告（{mode_name}）",
+                "=" * 60,
+                f"成功处理文件：{result.successful_files} / {len(self.file_paths)}",
+                f"替换总次数：{result.total_count}",
+                f"已创建备份：{len(result.backup_files)} 个文件",
+                "=" * 60,
+                "",
+            ]
+            for detail in result.details:
+                lines.append(f"📁 文件：{detail.filename}")
+                for d in detail.details:
+                    lines.append(f"   {d}")
+                lines.append("")
+
+            if result.errors:
+                lines.append("❌ 错误列表：")
+                for err in result.errors:
+                    lines.append(f"• {err}")
+                self.status_bar.set_status("替换完成（存在错误）", "warning")
+            else:
+                self.status_bar.set_status("替换完成", "success")
+
+            summary = f"处理完成！成功替换 {result.total_count} 处，涉及 {result.successful_files} 个文件。"
+            ResultViewerDialog(
+                self.root,
+                title="替换完成",
+                summary_text=summary,
+                details_text="\n".join(lines),
+                is_success=not bool(result.errors),
+            )
+        except Exception as exc:
+            self.status_bar.hide_progress()
+            self.status_bar.set_status("替换失败", "error")
+            messagebox.showerror("替换失败", str(exc), parent=self.root)
+        finally:
+            self.btn_start_replace.config(state=tk.NORMAL)
+
+    def _update_replace_status(self):
+        count = len(self.file_paths)
+        self.status_bar.set_status("就绪", "normal")
+        self.status_bar.set_metrics(f"已加载 {count} 个文件" if count > 0 else "")
+
+    # =========================================================================
+    # TEMPLATE MERGE LOGIC
+    # =========================================================================
+
+    def _browse_template(self):
+        path = filedialog.askopenfilename(
+            title="选择 Word 模板",
+            filetypes=[("Word 模板", "*.docx *.docm *.doc"), ("所有文件", "*.*")],
+        )
+        if path:
+            self.template_path_var.set(os.path.abspath(path))
+            if not self.output_dir_var.get():
+                self.output_dir_var.set(str(Path(path).parent / "Generated"))
+
+    def _browse_excel(self):
+        path = filedialog.askopenfilename(
+            title="选择 Excel 数据表",
+            filetypes=[("Excel 表格", "*.xlsx"), ("所有文件", "*.*")],
+        )
+        if path:
+            self.excel_path_var.set(os.path.abspath(path))
+
+    def _browse_output_dir(self):
+        path = filedialog.askdirectory(title="选择生成文档输出目录")
+        if path:
+            self.output_dir_var.set(os.path.abspath(path))
+
+    def _scan_and_match_template(self):
+        t_path = self.template_path_var.get().strip()
+        e_path = self.excel_path_var.get().strip()
+
+        if not os.path.isfile(t_path):
+            messagebox.showwarning("提示", "请选择存在的 Word 模板文件。", parent=self.root)
+            return
+        if not os.path.isfile(e_path):
+            messagebox.showwarning("提示", "请选择存在的 Excel 数据文件。", parent=self.root)
+            return
+
+        self.status_bar.set_status("正在扫描模板与数据表...", "running")
+        self.root.update()
+
         try:
-            clipboard_content = self.root.clipboard_get()
-            self.replace_text.delete("1.0", tk.END)
-            self.replace_text.insert("1.0", clipboard_content)
-            self.status_label.config(text="Pasted clipboard content to replace box.", fg="blue")
-        except tk.TclError:
-            self.status_label.config(text="Clipboard is empty or contains non-text data.", fg="orange")
-    
-    def update_title(self):
-        """Update window title with file count"""
-        file_count = len(self.file_paths)
-        if file_count == 0:
-            self.root.title("Bulk Text Replacement for Word - No files selected.")
-        else:
-            self.root.title(f"Bulk Text Replacement for Word - {file_count} file{'s' if file_count != 1 else ''}")
-    
-    def update_file_list(self):
-        """Update the file listbox and related UI elements"""
-        self.file_listbox.delete(0, tk.END)
-        
-        for file_path in self.file_paths:
-            self.file_listbox.insert(tk.END, os.path.basename(file_path))
-        
-        # Update file count label
-        file_count = len(self.file_paths)
-        if file_count == 0:
-            self.file_count_label.config(text="No files selected.")
-            self.replace_btn.config(state="disabled")
-        else:
-            self.file_count_label.config(text=f"{file_count} file{'s' if file_count != 1 else ''} selected.")
-            self.replace_btn.config(state="normal")
-        
-        self.update_title()
-    
-    def add_files(self):
-        """Add more Word documents to the list"""
-        file_types = [
-            ("Word Documents", "*.docx *.doc *.docm"),
-            ("Word 2007+ Documents", "*.docx *.docm"),
-            ("Word 97-2003 Documents", "*.doc"),
-            ("All files", "*.*")
+            suffix = Path(t_path).suffix.lower()
+            if suffix == ".doc":
+                if not CAPABILITIES.has_word_com:
+                    raise RuntimeError(".doc 格式模板扫描需要 Windows 与 Microsoft Word。")
+                self.template_fields = extract_template_fields_com(t_path)
+            else:
+                self.template_fields = extract_template_fields(t_path)
+
+            if not self.template_fields:
+                raise ValueError("未在 Word 模板中检测到 {{字段名}} 格式的变量。")
+
+            self.template_excel_data = load_excel_data(e_path)
+            self.template_mapping = build_field_mapping(self.template_fields, self.template_excel_data.headers)
+            self._refresh_mapping_tree()
+
+            missing = sum(1 for v in self.template_mapping.values() if not v)
+            summary = (
+                f"扫描完成：检测到 {len(self.template_fields)} 个模板变量，"
+                f"{len(self.template_excel_data.rows)} 行数据；"
+                f"已自动匹配 {len(self.template_fields) - missing} 个，缺失 {missing} 个。"
+            )
+            self.mapping_summary_lbl.config(
+                text=summary,
+                fg=THEME.colors.error if missing else THEME.colors.success,
+            )
+            self.status_bar.set_status("扫描完成", "success")
+        except Exception as exc:
+            self.status_bar.set_status("扫描失败", "error")
+            messagebox.showerror("扫描失败", str(exc), parent=self.root)
+
+    def _refresh_mapping_tree(self):
+        self.tree_mapping.delete(*self.tree_mapping.get_children())
+        for field in self.template_fields:
+            col = self.template_mapping.get(field, "")
+            status = "✓ 已匹配" if col else "未匹配"
+            tag = "matched" if col else "missing"
+            self.tree_mapping.insert(
+                "",
+                "end",
+                iid=field,
+                values=(f"{{{{{field}}}}}", col or "（双击选择对应列）", status),
+                tags=(tag,),
+            )
+
+    def _edit_mapping_cell(self, event):
+        if not self.template_excel_data:
+            return
+        row_id = self.tree_mapping.identify_row(event.y)
+        column = self.tree_mapping.identify_column(event.x)
+        if not row_id or column != "#2":
+            return
+
+        bbox = self.tree_mapping.bbox(row_id, "column")
+        if not bbox:
+            return
+
+        if self._mapping_combobox:
+            self._mapping_combobox.destroy()
+
+        combo = ttk.Combobox(self.tree_mapping, values=[""] + self.template_excel_data.headers, state="readonly")
+        combo.set(self.template_mapping.get(row_id, ""))
+        combo.place(x=bbox[0], y=bbox[1], width=bbox[2], height=bbox[3])
+        combo.focus_set()
+        self._mapping_combobox = combo
+
+        def save(_event=None):
+            self.template_mapping[row_id] = combo.get()
+            combo.destroy()
+            self._mapping_combobox = None
+            self._refresh_mapping_tree()
+
+        combo.bind("<<ComboboxSelected>>", save)
+        combo.bind("<FocusOut>", save)
+
+    def _preview_template_merge(self):
+        if not self.template_excel_data or not self.template_fields:
+            self._scan_and_match_template()
+        if not self.template_excel_data or not self.template_fields:
+            return
+
+        t_path = self.template_path_var.get().strip()
+        out_dir = self.output_dir_var.get().strip() or str(Path.cwd() / "Generated")
+        extension = Path(t_path).suffix or ".docx"
+        fn_rule = self.filename_rule_var.get().strip() or "{{甲方名称}}-合同.docx"
+
+        reserved: set[str] = set()
+        lines = [
+            "📑 模板批量生成预览（前 5 行）",
+            "=" * 60,
+            f"Word 模板：{os.path.basename(t_path)}",
+            f"Excel 数据：{os.path.basename(self.excel_path_var.get())}",
+            f"输出目录：{out_dir}",
+            f"命名规则：{fn_rule}",
+            "=" * 60,
+            "",
         ]
-        
-        selected_files = filedialog.askopenfilenames(
-            title="Select Word Documents to add",
-            filetypes=file_types,
-            initialdir=os.path.dirname(self.file_paths[0]) if self.file_paths else None
+
+        for excel_row, row in list(zip(self.template_excel_data.excel_rows, self.template_excel_data.rows))[:5]:
+            fn = build_output_filename(
+                fn_rule, mapped_row_values(row, self.template_mapping), out_dir, extension, reserved
+            )
+            lines.append(f"【Excel 第 {excel_row} 行】→ 输出文件: {fn}")
+            for field in self.template_fields:
+                header = self.template_mapping.get(field, "")
+                val = row.get(header, "") if header else "【未匹配】"
+                lines.append(f"   {{{{{field}}}}} => {val}")
+            lines.append("")
+
+        self._set_merge_log("\n".join(lines))
+        self.status_bar.set_status("预览就绪", "normal")
+
+    def _start_template_merge(self):
+        if not self.template_excel_data or not self.template_fields:
+            self._scan_and_match_template()
+        if not self.template_excel_data or not self.template_fields:
+            return
+
+        t_path = self.template_path_var.get().strip()
+        out_dir = self.output_dir_var.get().strip()
+        fn_rule = self.filename_rule_var.get().strip()
+
+        if not out_dir:
+            messagebox.showwarning("提示", "请指定输出文件夹路径。", parent=self.root)
+            return
+        if not fn_rule:
+            messagebox.showwarning("提示", "请输入输出文件名规则。", parent=self.root)
+            return
+
+        missing = [f"{{{{{f}}}}}" for f, h in self.template_mapping.items() if not h]
+        if missing and not messagebox.askyesno(
+            "存在未匹配变量",
+            "以下模板变量未在 Excel 中找到对应列：\n\n" + "\n".join(missing) + "\n\n是否继续批量生成？",
+            parent=self.root,
+        ):
+            return
+
+        self.btn_start_merge.config(state=tk.DISABLED)
+        self.status_bar.set_status("正在批量生成文档...", "running")
+        self._set_merge_log("正在批量生成文档...\n")
+        self.root.update()
+
+        def progress_cb(current, total, result: MergeResult):
+            self.status_bar.show_progress(current, total, result.filename)
+            status_text = "成功" if result.success else f"失败: {result.error}"
+            self._append_merge_log(f"第 {result.excel_row} 行 | {result.filename} | {status_text}\n")
+            self.root.update()
+
+        try:
+            results = generate_batch(
+                template_path=t_path,
+                data=self.template_excel_data,
+                mapping=self.template_mapping,
+                output_folder=out_dir,
+                filename_rule=fn_rule,
+                use_com=self.template_use_com_var.get(),
+                replace_empty=self.template_replace_empty_var.get(),
+                progress=progress_cb,
+            )
+
+            self.status_bar.hide_progress()
+            success_count = sum(1 for r in results if r.success)
+            fail_count = len(results) - success_count
+            summary = f"批量生成完成：成功 {success_count} 份，失败 {fail_count} 份；保存至：{out_dir}"
+            self.status_bar.set_status("生成完成", "success" if fail_count == 0 else "warning")
+            messagebox.showinfo("生成完成", summary, parent=self.root)
+        except Exception as exc:
+            self.status_bar.hide_progress()
+            self.status_bar.set_status("生成失败", "error")
+            messagebox.showerror("批量生成失败", str(exc), parent=self.root)
+        finally:
+            self.btn_start_merge.config(state=tk.NORMAL)
+
+    def _set_merge_log(self, text: str):
+        self.merge_log.config(state=tk.NORMAL)
+        self.merge_log.delete("1.0", tk.END)
+        self.merge_log.insert("1.0", text)
+        self.merge_log.config(state=tk.DISABLED)
+
+    def _append_merge_log(self, text: str):
+        self.merge_log.config(state=tk.NORMAL)
+        self.merge_log.insert(tk.END, text)
+        self.merge_log.see(tk.END)
+        self.merge_log.config(state=tk.DISABLED)
+
+    def _update_merge_status(self):
+        self.status_bar.set_status("就绪", "normal")
+        if self.template_excel_data:
+            self.status_bar.set_metrics(f"已加载 {len(self.template_excel_data.rows)} 行数据")
+        else:
+            self.status_bar.set_metrics("")
+
+    # =========================================================================
+    # HELP & SHORTCUTS DIALOG
+    # =========================================================================
+
+    def _show_help_dialog(self):
+        help_text = (
+            "Word 批量处理工具 — 使用指南与快捷键\n\n"
+            "【功能模式】\n"
+            "• 文本查找替换：批量查找替换多个 Word 文档中的内容，支持快速/完整模式、正则与全字匹配。\n"
+            "• 模板批量生成：根据 Word 模板与 Excel 数据表，按行批量生成填充后的个性化文档。\n\n"
+            "【快捷键】\n"
+            "• Ctrl+O / Cmd+O：添加文档 / 浏览模板\n"
+            "• Ctrl+R / Cmd+R：执行替换 / 开始生成\n"
+            "• Ctrl+P / Cmd+P：预览更改\n"
+            "• Delete：在文件列表中移除选中的文档\n"
+            "• Tab：在各输入框与按钮间顺畅切换焦点\n\n"
+            "【模式差异说明】\n"
+            "• 快速模式：基于 python-docx，速度快，适合正文与表格，支持正则表达式。\n"
+            "• 完整模式：基于 Microsoft Word COM，完整覆盖页眉页脚、文本框与超链接保护。"
         )
-        
-        added_count = 0
-        for file_path in selected_files:
-            # Normalize the path to avoid duplicates due to different path formats
-            normalized_path = os.path.normpath(os.path.abspath(file_path))
-            
-            # Check if this normalized path is already in our list (also normalized)
-            already_exists = False
-            for existing_path in self.file_paths:
-                if os.path.normpath(os.path.abspath(existing_path)) == normalized_path:
-                    already_exists = True
-                    break
-            
-            if not already_exists:
-                self.file_paths.append(file_path)
-                added_count += 1
-        
-        if added_count > 0:
-            self._refresh_text_cache()
-            self.update_file_list()
-            self.status_label.config(text=f"Added {added_count} file{'s' if added_count != 1 else ''}", fg="blue")
-            self._schedule_live_count()
-        else:
-            if len(selected_files) > 0:
-                self.status_label.config(text="Files already in list - no duplicates added.", fg="orange")
-            else:
-                self.status_label.config(text="No new files added.", fg="orange")
-    
-    def remove_selected_file(self):
-        """Remove the selected file(s) from the list"""
-        selections = self.file_listbox.curselection()
-        if selections:
-            # Get filenames before removing (for status message)
-            removed_files = []
-            for index in selections:
-                removed_files.append(os.path.basename(self.file_paths[index]))
-            
-            # Remove files in reverse order to maintain correct indices
-            for index in reversed(selections):
-                del self.file_paths[index]
-            
-            self._refresh_text_cache()
-            self.update_file_list()
-            self._schedule_live_count()
-            
-            # Update status message
-            if len(removed_files) == 1:
-                self.status_label.config(text=f"Removed: {removed_files[0]}", fg="orange")
-            else:
-                self.status_label.config(text=f"Removed {len(removed_files)} files", fg="orange")
-        else:
-            messagebox.showwarning("Warning", "Please select one or more files to remove.")
-    
-    def clear_all_files(self):
-        """Clear all files from the list"""
-        if self.file_paths:
-            if messagebox.askyesno("Confirm", "Remove all files from the list?"):
-                file_count = len(self.file_paths)
-                self.file_paths.clear()
-                self._text_cache.clear()
-                self.update_file_list()
-                self.match_counter_label.config(text="")
-                self.status_label.config(text=f"Cleared {file_count} file{'s' if file_count != 1 else ''}", fg="orange")
-    
-    def get_document_text(self, doc):
-        """Extract all text from document including paragraphs and tables"""
-        full_text = []
-        
-        # Get text from paragraphs (strip invisible formatting chars)
-        for paragraph in doc.paragraphs:
-            full_text.append(self._strip_invisible_chars(paragraph.text))
-        
-        # Get text from tables (including nested tables)
-        for table in doc.tables:
-            self._collect_table_text(table, full_text)
-        
-        return '\n'.join(full_text)
-    
-    def _collect_table_text(self, table, text_list):
-        """Recursively collect text from a table and its nested tables"""
-        for row in table.rows:
-            for cell in row.cells:
-                for paragraph in cell.paragraphs:
-                    text_list.append(self._strip_invisible_chars(paragraph.text))
-                for nested_table in cell.tables:
-                    self._collect_table_text(nested_table, text_list)
-    
-    def count_occurrences(self, text, search_for, case_sensitive=False, use_regex=False, whole_word=False):
-        """Count occurrences with case sensitivity, regex, and whole word options"""
-        if not search_for:
-            return 0
-        # Normalize: strip invisible formatting characters
-        text = self._strip_invisible_chars(text)
-        search_for = self._strip_invisible_chars(search_for)
-        if use_regex:
-            try:
-                flags = 0 if case_sensitive else re.IGNORECASE
-                return len(re.findall(search_for, text, flags))
-            except re.error:
-                return 0
-        if whole_word:
-            pattern = r'\b' + re.escape(search_for) + r'\b'
-            flags = 0 if case_sensitive else re.IGNORECASE
-            return len(re.findall(pattern, text, flags))
-        if not case_sensitive:
-            return text.lower().count(search_for.lower())
-        else:
-            return text.count(search_for)
-
-    def _find_match_contexts(self, text, search_for, case_sensitive=False, use_regex=False, whole_word=False, context_chars=40, max_matches=5):
-        """Extract surrounding context for each match (for diff preview)"""
-        contexts = []
-        if not search_for:
-            return contexts
-        text = self._strip_invisible_chars(text)
-        search_for = self._strip_invisible_chars(search_for)
-        if use_regex:
-            pattern = search_for
-        elif whole_word:
-            pattern = r'\b' + re.escape(search_for) + r'\b'
-        else:
-            pattern = re.escape(search_for)
-        flags = 0 if case_sensitive else re.IGNORECASE
-        try:
-            for i, m in enumerate(re.finditer(pattern, text, flags)):
-                if i >= max_matches:
-                    break
-                start = max(0, m.start() - context_chars)
-                end = min(len(text), m.end() + context_chars)
-                before = text[start:m.start()].replace('\n', ' ').replace('\r', '')
-                matched = m.group().replace('\n', ' ').replace('\r', '')
-                after = text[m.end():end].replace('\n', ' ').replace('\r', '')
-                prefix = "..." if start > 0 else ""
-                suffix = "..." if end < len(text) else ""
-                contexts.append(f'{prefix}{before}[{matched}]{after}{suffix}')
-        except re.error:
-            pass
-        return contexts
-
-    def preview_changes(self):
-        """Show preview with choice between Standard (fast) or Advanced (comprehensive) mode"""
-        if not self.file_paths:
-            messagebox.showwarning("Warning", "Please add at least one Word document.")
-            return
-            
-        search_for = self.get_processed_search_text()
-        
-        if not search_for:
-            messagebox.showwarning("Warning", "Please enter text to search for.")
-            return
-        
-        use_regex = self.regex_var.get()
-        if use_regex:
-            try:
-                re.compile(search_for)
-            except re.error as e:
-                messagebox.showerror("Invalid Regex", f"Invalid regex pattern:\n{str(e)}")
-                return
-        
-        # NEW: Ask user for preview mode
-        preview_choice = messagebox.askyesnocancel(
-            "Preview Mode Selection",
-            "Do you want to run the fast Standard Preview?\n\n" +
-            "YES = Standard Preview (Fast)\n" +
-            "   • Main content only (paragraphs + tables)\n\n" +
-            "NO = Advanced Preview (Comprehensive)\n" +
-            "   • Main content + shapes + headers + footers + footnotes + endnotes + form fields + hyperlinks"
+        ResultViewerDialog(
+            self.root,
+            title="使用帮助与快捷键",
+            summary_text="高效、现代的 Word 批量文本处理与模板生成工具。",
+            details_text=help_text,
+            is_success=True,
         )
-        
-        if preview_choice is None:  # User clicked Cancel
-            return
-        elif preview_choice:  # User clicked Yes - Standard Preview
-            self.preview_standard_only()
-        else:  # User clicked No - Advanced Preview
-            self.preview_comprehensive()
 
-    def preview_standard_only(self):
-        """Fast preview - Main content only (python-docx)"""
-        search_for = self.get_processed_search_text()
-        case_sensitive = self.case_sensitive_var.get()
-        use_regex = self.regex_var.get()
-        whole_word = self.whole_word_var.get()
-        
-        try:
-            preview_details = []
-            total_matches = 0
-            files_with_matches = 0
-            
-            # Show progress for standard preview
-            self.status_label.config(text="Standard preview in progress...", fg="orange")
-            self.progress_frame.pack(fill=tk.X, pady=(10, 0))
-            self.root.update()
-            
-            for i, file_path in enumerate(self.file_paths):
-                # Update progress
-                progress_percent = int((i / len(self.file_paths)) * 100)
-                self.progress_label.config(text=f"Analyzing {i+1}/{len(self.file_paths)}: {os.path.basename(file_path)}")
-                self.progress_percent_label.config(text=f"Progress: {progress_percent}%")
-                self.root.update()
-                
-                file_result = {
-                    'filename': os.path.basename(file_path),
-                    'main_total': 0,
-                    'details': []
-                }
-                
-                try:
-                    # Analyze main content only (python-docx)
-                    doc = Document(file_path)
-                    document_text = self.get_document_text(doc)
-                    main_occurrences = self.count_occurrences(document_text, search_for, case_sensitive, use_regex, whole_word)
-                    
-                    file_result['main_total'] = main_occurrences
-                    file_result['contexts'] = []
-                    if main_occurrences > 0:
-                        files_with_matches += 1
-                        total_matches += main_occurrences
-                        file_result['details'].append(f"  📄 Main content: {main_occurrences} match(es)")
-                        file_result['contexts'] = self._find_match_contexts(
-                            document_text, search_for, case_sensitive, use_regex, whole_word)
-                    else:
-                        file_result['details'].append(f"  📄 Main content: No matches")
-                    
-                    preview_details.append(file_result)
-                    
-                except Exception as e:
-                    file_result['details'] = [f"  ❌ Error: {str(e)}"]
-                    preview_details.append(file_result)
-            
-            # Hide progress
-            self.progress_frame.pack_forget()
-            self.status_label.config(text="Standard preview completed!", fg="green")
-            
-            # Show standard preview results
-            self.show_standard_preview_results(
-                preview_details, search_for, self.get_processed_replace_text(),
-                total_matches, files_with_matches, case_sensitive
-            )
-            
-        except Exception as e:
-            self.progress_frame.pack_forget()
-            self.status_label.config(text="Error occurred", fg="red")
-            messagebox.showerror("Error", f"Error during standard preview: {str(e)}")
+    def _setup_keybindings(self):
+        modifier = "Command" if CAPABILITIES.is_macos else "Control"
+        self.root.bind(f"<{modifier}-o>", lambda _e: self._add_files())
+        self.root.bind(f"<{modifier}-O>", lambda _e: self._add_files())
+        self.root.bind(f"<{modifier}-r>", lambda _e: self._start_replace())
+        self.root.bind(f"<{modifier}-R>", lambda _e: self._start_replace())
+        self.root.bind(f"<{modifier}-p>", lambda _e: self._preview_replace())
+        self.root.bind(f"<{modifier}-P>", lambda _e: self._preview_replace())
+        self.root.bind("<F1>", lambda _e: self._show_help_dialog())
 
-    def show_standard_preview_results(self, results, search_text, replace_text, total_matches, files_with_matches, case_sensitive):
-        """Show standard preview results (main content only)"""
-        case_info = " (case sensitive)" if case_sensitive else " (case insensitive)"
-        
-        message = "-" * 46 + "\n"
-        message += f"📄 Standard Preview results{case_info}\n"
-        message += "-" * 46 + "\n\n"
-        message += f"⚡ Fast Analysis: {total_matches} match(es) found in main content\n\n"
-        message += f"📊 Summary:\n"
-        message += f"Files analyzed: {len(results)}\n"
-        message += f"Main content matches: {total_matches} (in {files_with_matches} files)\n"
-        message += f"Search text: '{search_text[:40]}{'...' if len(search_text) > 40 else ''}'\n"
-        message += f"Replace text: '{replace_text[:40]}{'...' if len(replace_text) > 40 else ''}'\n"
-        message += f"Coverage: Main text and tables only\n"
-        message += "=" * 77 + "\n\n"
-        
-        # Show detailed file results
-        for i, result in enumerate(results, 1):
-            message += f"📁 FILE {i}: {result['filename']}\n"
-            
-            if result['main_total'] > 0:
-                message += f"   ✅ Matches found: {result['main_total']}\n"
-            else:
-                message += f"   ✅ No matches found\n"
-            
-            for detail in result['details']:
-                message += f"   {detail}\n"
-            
-            # Diff preview: show context snippets
-            contexts = result.get('contexts', [])
-            if contexts:
-                message += f"\n   📝 Preview (first {len(contexts)} match{'es' if len(contexts) != 1 else ''}):\n"
-                for j, ctx in enumerate(contexts, 1):
-                    message += f"      {j}. {ctx}\n"
-                if result['main_total'] > len(contexts):
-                    message += f"      ... and {result['main_total'] - len(contexts)} more\n"
-            
-            message += "\n" + "=" * 77 + "\n\n"
-        
-        # Recommendations
-        if total_matches > 0:
-            message += "💡 Replacement recommendations:\n"
-            message += "Use 'Standard Replace' for fast replacement of main content\n"
-            message += "Use 'Advanced Replace' if you also need shapes/headers/footers\n"
-        else:
-            message += "💡 Tip: No matches found in main content. Try 'Advanced Preview' to run a comprehensive check."
-        
-        self.show_scrollable_results(message, "Standard Preview results")
-
-    def preview_comprehensive(self):
-        """Comprehensive preview - All areas using Word COM automation"""
-        search_for = self.get_processed_search_text()
-        case_sensitive = self.case_sensitive_var.get()
-        
-        if not HAS_WIN32COM:
-            messagebox.showerror("Error", 
-                "Advanced preview requires the 'pywin32' package.\n\n"
-                "Install it with: pip install pywin32")
-            return
-        
-        if self.regex_var.get():
-            messagebox.showinfo("Regex Not Supported", 
-                "Regex is only supported with Standard Preview/Replace.\n\n"
-                "Advanced Preview uses Word's native engine\n"
-                "which does not support Python regex syntax.\n\n"
-                "Please uncheck 'Regex' or use Standard Preview instead.")
-            return
-        
-        word_app = None
-        try:
-            preview_details = []
-            total_advanced_matches = 0
-            files_with_advanced_matches = 0
-            
-            # Show progress for comprehensive preview
-            self.status_label.config(text="Comprehensive analysis in progress...", fg="orange")
-            self.progress_frame.pack(fill=tk.X, pady=(10, 0))
-            self.root.update()
-            
-            # Open Word once for all files
-            word_app = win32com.client.Dispatch("Word.Application")
-            word_app.Visible = False
-            word_app.DisplayAlerts = False
-            word_app.ScreenUpdating = False
-            
-            for i, file_path in enumerate(self.file_paths):
-                # Update progress
-                progress_percent = int((i / len(self.file_paths)) * 100)
-                self.progress_label.config(text=f"Analyzing {i+1}/{len(self.file_paths)}: {os.path.basename(file_path)}")
-                self.progress_percent_label.config(text=f"Progress: {progress_percent}%")
-                self.root.update()
-                
-                try:
-                    file_result = {
-                        'filename': os.path.basename(file_path),
-                        'total': 0,
-                        'details': []
-                    }
-                    
-                    advanced_result = self.preview_advanced_areas(file_path, search_for, case_sensitive, word_app)
-                    file_result['total'] = advanced_result['total']
-                    
-                    if advanced_result['total'] > 0:
-                        files_with_advanced_matches += 1
-                        total_advanced_matches += advanced_result['total']
-                        file_result['details'].extend(advanced_result['details'])
-                    else:
-                        file_result['details'].append(f"  📄 No matches found in any areas")
-                    
-                    preview_details.append(file_result)
-                    
-                except Exception as e:
-                    file_result = {
-                        'filename': os.path.basename(file_path),
-                        'total': 0,
-                        'details': [f"  ❌ Error: {str(e)}"]
-                    }
-                    preview_details.append(file_result)
-            
-            # Hide progress
-            self.progress_frame.pack_forget()
-            self.status_label.config(text="Comprehensive preview completed!", fg="green")
-            
-            # Show comprehensive preview results
-            self.show_comprehensive_preview_results(
-                preview_details, search_for, self.get_processed_replace_text(),
-                total_advanced_matches, files_with_advanced_matches, 
-                case_sensitive
-            )
-            
-        except Exception as e:
-            self.progress_frame.pack_forget()
-            self.status_label.config(text="Error occurred", fg="red")
-            messagebox.showerror("Error", f"Error during comprehensive preview: {str(e)}")
-        finally:
-            try:
-                if word_app:
-                    word_app.ScreenUpdating = True
-                    word_app.Quit()
-            except Exception:
-                pass
-#########END OF PART 2######
-
-
-
-
-
-#########PART 3A######
-    def _build_shape_ranges(self, doc):
-        """Pre-build list of (start, end) for all shapes with text frames.
-        Used to check if a hyperlink is inside a shape in O(n) instead of O(n*m)."""
-        ranges = []
-        self._collect_shape_ranges(doc.Shapes, ranges)
-        return ranges
-
-    def _collect_shape_ranges(self, shapes, ranges):
-        """Recursively collect text frame ranges from shapes (including grouped shapes)"""
-        for shape in shapes:
-            try:
-                if shape.HasTextFrame and shape.TextFrame.HasText:
-                    ranges.append((shape.TextFrame.TextRange.Start, shape.TextFrame.TextRange.End))
-            except Exception:
-                pass
-            try:
-                if shape.Type == 6:  # msoGroup
-                    self._collect_shape_ranges(shape.GroupItems, ranges)
-            except Exception:
-                pass
-
-    def _is_in_shape_ranges(self, start, end, shape_ranges):
-        """Check if a range is inside any pre-cached shape range."""
-        for s_start, s_end in shape_ranges:
-            if start >= s_start and end <= s_end:
-                return True
-        return False
-
-    def _count_in_shapes(self, shapes, search_text, case_sensitive, whole_word):
-        """Recursively count occurrences in shapes (including grouped shapes)"""
-        count = 0
-        for shape in shapes:
-            try:
-                if shape.HasTextFrame and shape.TextFrame.HasText:
-                    shape_text = shape.TextFrame.TextRange.Text
-                    if len(shape_text) > 1:
-                        count += self.count_occurrences(shape_text, search_text, case_sensitive, False, whole_word)
-            except Exception:
-                pass
-            try:
-                if shape.Type == 6:  # msoGroup
-                    count += self._count_in_shapes(shape.GroupItems, search_text, case_sensitive, whole_word)
-            except Exception:
-                pass
-        return count
-
-    def _replace_in_shapes(self, shapes, search_text, replace_text, case_sensitive, whole_word):
-        """Recursively replace in shapes using iterative Find (including grouped shapes)"""
-        count = 0
-        for shape in shapes:
-            try:
-                if shape.HasTextFrame and shape.TextFrame.HasText:
-                    if len(shape.TextFrame.TextRange.Text) > 1:
-                        count += self._find_replace_count(
-                            shape.TextFrame.TextRange, search_text, replace_text, case_sensitive, whole_word)
-            except Exception:
-                pass
-            try:
-                if shape.Type == 6:  # msoGroup
-                    count += self._replace_in_shapes(shape.GroupItems, search_text, replace_text, case_sensitive, whole_word)
-            except Exception:
-                pass
-        return count
-
-    def _find_replace_count(self, rng, search_text, replace_text, case_sensitive, whole_word=False):
-        """Iterative Find.Execute (Option A) — replaces one match at a time, returns exact count."""
-        count = 0
-        rng.Find.ClearFormatting()
-        rng.Find.Replacement.ClearFormatting()
-        while True:
-            found = rng.Find.Execute(
-                FindText=search_text, ReplaceWith=replace_text,
-                Replace=1, Forward=True, Wrap=0,
-                MatchCase=case_sensitive, MatchWholeWord=whole_word,
-                MatchWildcards=False, MatchSoundsLike=False,
-                MatchAllWordForms=False, Format=False
-            )
-            if not found:
-                break
-            count += 1
-        return count
-
-    def preview_advanced_areas(self, file_path, search_text, case_sensitive=False, word_app=None):
-        """Preview advanced areas using Word COM automation - READ ONLY"""
-        result = {
-            'total': 0,
-            'details': []
-        }
-        
-        whole_word = self.whole_word_var.get()
-        own_word_app = False
-        doc = None
-        try:
-            if word_app is None:
-                word_app = win32com.client.Dispatch("Word.Application")
-                word_app.Visible = False
-                word_app.DisplayAlerts = False
-                word_app.ScreenUpdating = False
-                own_word_app = True
-            
-            full_path = os.path.abspath(file_path)
-            doc = word_app.Documents.Open(full_path, ReadOnly=True)
-            
-            shapes_count = 0
-            headers_count = 0
-            footers_count = 0
-            footnotes_count = 0
-            endnotes_count = 0
-            form_fields_count = 0
-            hyperlinks_count = 0
-            main_content_count = 0
-            
-            # Count in text boxes / shapes via StoryRanges (wdTextFrameStory = 5)
-            # This catches ALL text boxes regardless of how they were inserted
-            try:
-                story = doc.StoryRanges(5)  # wdTextFrameStory
-                while story:
-                    story_text = story.Text
-                    if len(story_text) > 1:
-                        shapes_count += self.count_occurrences(story_text, search_text, case_sensitive, False, whole_word)
-                    try:
-                        story = story.NextStoryRange
-                    except Exception:
-                        break
-            except Exception:
-                pass
-            
-            # Count in headers and footers
-            for section in doc.Sections:
-                for i in range(1, 4):
-                    try:
-                        if section.Headers(i).Exists:
-                            header_text = section.Headers(i).Range.Text
-                            if len(header_text) > 1:
-                                headers_count += self.count_occurrences(header_text, search_text, case_sensitive, False, whole_word)
-                    except Exception:
-                        pass
-                    try:
-                        if section.Footers(i).Exists:
-                            footer_text = section.Footers(i).Range.Text
-                            if len(footer_text) > 1:
-                                footers_count += self.count_occurrences(footer_text, search_text, case_sensitive, False, whole_word)
-                    except Exception:
-                        pass
-            
-            # Count in footnotes
-            for footnote in doc.Footnotes:
-                try:
-                    footnote_text = footnote.Range.Text
-                    if len(footnote_text) > 1:
-                        footnotes_count += self.count_occurrences(footnote_text, search_text, case_sensitive, False, whole_word)
-                except Exception:
-                    pass
-            
-            # Count in endnotes
-            for endnote in doc.Endnotes:
-                try:
-                    endnote_text = endnote.Range.Text
-                    if len(endnote_text) > 1:
-                        endnotes_count += self.count_occurrences(endnote_text, search_text, case_sensitive, False, whole_word)
-                except Exception:
-                    pass
-            
-            # Count in form fields
-            for field in doc.FormFields:
-                try:
-                    if field.Type == 70:  # wdFieldFormTextInput
-                        field_text = field.Result
-                        if len(field_text) > 0:
-                            form_fields_count += self.count_occurrences(field_text, search_text, case_sensitive, False, whole_word)
-                except Exception:
-                    pass
-            
-            # Count in hyperlinks (ONLY those NOT in shapes to avoid double counting)
-            shape_ranges = self._build_shape_ranges(doc)
-            for hyperlink in doc.Hyperlinks:
-                try:
-                    display_text = hyperlink.TextToDisplay
-                    if len(display_text) > 0:
-                        if not self._is_in_shape_ranges(hyperlink.Range.Start, hyperlink.Range.End, shape_ranges):
-                            hyperlinks_count += self.count_occurrences(display_text, search_text, case_sensitive, False, whole_word)
-                except Exception:
-                    pass
-            
-            # Count in main content (subtract hyperlink matches to avoid double-counting,
-            # since doc.Content.Text includes hyperlink display text)
-            try:
-                main_text = doc.Content.Text
-                if len(main_text) > 1:
-                    raw_main_count = self.count_occurrences(main_text, search_text, case_sensitive, False, whole_word)
-                    main_content_count = max(0, raw_main_count - hyperlinks_count)
-            except Exception:
-                pass
-            
-            # Build results
-            if shapes_count > 0:
-                result['details'].append(f"  📦 Text boxes: {shapes_count} match(es)")
-                result['total'] += shapes_count
-            if headers_count > 0:
-                result['details'].append(f"  📄 Headers: {headers_count} match(es)")
-                result['total'] += headers_count
-            if footers_count > 0:
-                result['details'].append(f"  📄 Footers: {footers_count} match(es)")
-                result['total'] += footers_count
-            if footnotes_count > 0:
-                result['details'].append(f"  📝 Footnotes: {footnotes_count} match(es)")
-                result['total'] += footnotes_count
-            if endnotes_count > 0:
-                result['details'].append(f"  📝 Endnotes: {endnotes_count} match(es)")
-                result['total'] += endnotes_count
-            if form_fields_count > 0:
-                result['details'].append(f"  📋 Form fields: {form_fields_count} match(es)")
-                result['total'] += form_fields_count
-            if hyperlinks_count > 0:
-                result['details'].append(f"  🔗 Hyperlinks: {hyperlinks_count} match(es)")
-                result['total'] += hyperlinks_count
-            if main_content_count > 0:
-                result['details'].append(f"  📄 Main content: {main_content_count} match(es)")
-                result['total'] += main_content_count
-            
-            return result
-            
-        except Exception as e:
-            result['details'] = [f"  ❌ Advanced preview error: {str(e)}"]
-            return result
-        finally:
-            try:
-                if doc:
-                    doc.Close(False)
-            except Exception:
-                pass
-            if own_word_app:
-                try:
-                    word_app.ScreenUpdating = True
-                    word_app.Quit()
-                except Exception:
-                    pass
-
-    def show_comprehensive_preview_results(self, results, search_text, replace_text, 
-                                         total_matches, files_with_matches, 
-                                         case_sensitive):
-        """Show comprehensive preview results"""
-        case_info = " (case sensitive)" if case_sensitive else " (case insensitive)"
-
-        message = "-" * 46 + "\n"    
-        message += f"🔍 Advanced Preview results{case_info}\n"
-        message += "-" * 46 + "\n\n" 
-        message += f"🎯 Complete Analysis: {total_matches} total match(es) found\n\n"
-        message += f"📊 Summary:\n"
-        message += f"Files analyzed: {len(results)}\n"
-        message += f"Total matches: {total_matches} (in {files_with_matches} files)\n"
-
-        
-        message += f"Search text: '{search_text[:40]}{'...' if len(search_text) > 40 else ''}'\n"
-        message += f"Replace text: '{replace_text[:40]}{'...' if len(replace_text) > 40 else ''}'\n"
-        message += "=" * 77 + "\n\n"
-        
-        # Show detailed file results
-        for i, result in enumerate(results, 1):
-            message += f"📁 FILE {i}: {result['filename']}\n"
-            
-            if result['total'] > 0:
-                message += f"   ✅ Total matches: {result['total']}\n"
-            else:
-                message += f"   ✅ No matches found\n"
-
-            
-            for detail in result['details']:
-                message += f"   {detail}\n"
-            message += "\n" + "=" * 77 + "\n\n"
-        
-        # Recommendations
-        if total_matches > 0:
-            message += "💡 Replacement recommendations:\n"
-            message += "Use 'Advanced Replace' for complete coverage with hyperlink preservation\n"
-            message += "Or use 'Standard Replace' for faster processing (main content only)\n"
-        else:
-            message += "💡 Tip: No matches found. Try different search terms or check spelling."
-        
-        self.show_scrollable_results(message, "Advanced Preview results")
-
-    def replace_in_paragraph_advanced(self, paragraph, search_text, replace_text, case_sensitive=False, use_regex=False, whole_word=False):
-        """Replace text in a paragraph that may span multiple runs"""
-        # Strip invisible formatting characters from runs before matching
-        for run in paragraph.runs:
-            cleaned = self._strip_invisible_chars(run.text)
-            if cleaned != run.text:
-                run.text = cleaned
-        
-        paragraph_text = paragraph.text
-        
-        # If whole_word and not regex, use \b boundaries internally
-        effective_regex = use_regex
-        effective_search = search_text
-        if whole_word and not use_regex:
-            effective_search = r'\b' + re.escape(search_text) + r'\b'
-            effective_regex = True
-        
-        # Count matches
-        if effective_regex:
-            try:
-                flags = 0 if case_sensitive else re.IGNORECASE
-                replacements = len(re.findall(effective_search, paragraph_text, flags))
-            except re.error:
-                return 0
-            if replacements == 0:
-                return 0
-        else:
-            if case_sensitive:
-                if search_text not in paragraph_text:
-                    return 0
-                replacements = paragraph_text.count(search_text)
-            else:
-                if search_text.lower() not in paragraph_text.lower():
-                    return 0
-                replacements = paragraph_text.lower().count(search_text.lower())
-        
-        # If the search text is contained within a single run, use simple replacement
-        for run in paragraph.runs:
-            run_text = run.text
-            if effective_regex:
-                try:
-                    flags = 0 if case_sensitive else re.IGNORECASE
-                    if re.search(effective_search, run_text, flags):
-                        run.text = re.sub(effective_search, replace_text, run_text, flags=flags)
-                        return replacements
-                except re.error:
-                    return 0
-            elif case_sensitive:
-                if search_text in run_text:
-                    run.text = run_text.replace(search_text, replace_text)
-                    return replacements
-            else:
-                if search_text.lower() in run_text.lower():
-                    pattern = re.escape(search_text)
-                    run.text = re.sub(pattern, replace_text, run_text, flags=re.IGNORECASE)
-                    return replacements
-        
-        # If we get here, the text spans multiple runs - rebuild the paragraph
-        if effective_regex:
-            try:
-                flags = 0 if case_sensitive else re.IGNORECASE
-                new_paragraph_text = re.sub(effective_search, replace_text, paragraph_text, flags=flags)
-            except re.error:
-                return 0
-        elif case_sensitive:
-            new_paragraph_text = paragraph_text.replace(search_text, replace_text)
-        else:
-            pattern = re.escape(search_text)
-            new_paragraph_text = re.sub(pattern, replace_text, paragraph_text, flags=re.IGNORECASE)
-        
-        # Clear all runs and add new text to first run
-        for run in paragraph.runs:
-            run.text = ""
-        
-        if paragraph.runs:
-            paragraph.runs[0].text = new_paragraph_text
-        else:
-            paragraph.text = new_paragraph_text
-        
-        return replacements
-#########END OF PART 3A######
-
-
-
-
-
-
-#########PART 3B######
-    def _replace_in_table(self, table, search_text, replace_text, case_sensitive, use_regex=False, whole_word=False):
-        """Replace text in a table, recursing into nested tables"""
-        count = 0
-        for row in table.rows:
-            for cell in row.cells:
-                for paragraph in cell.paragraphs:
-                    count += self.replace_in_paragraph_advanced(paragraph, search_text, replace_text, case_sensitive, use_regex, whole_word)
-                for nested_table in cell.tables:
-                    count += self._replace_in_table(nested_table, search_text, replace_text, case_sensitive, use_regex, whole_word)
-        return count
-
-    def replace_text_in_documents(self, close_after=False):
-        """Perform the actual text replacement across all files - Enhanced results"""
-        if not self.file_paths:
-            messagebox.showwarning("Warning", "Please add at least one Word document.")
-            return False
-            
-        search_for = self.get_processed_search_text()    # CHANGED: Use processed text
-        replace_with = self.get_processed_replace_text() # CHANGED: Use processed text
-        
-        if not search_for:
-            messagebox.showwarning("Warning", "Please enter text to search for.")
-            return False
-        
-        use_regex = self.regex_var.get()
-        
-        # Validate regex pattern
-        if use_regex:
-            try:
-                re.compile(search_for)
-            except re.error as e:
-                messagebox.showerror("Invalid Regex", f"Invalid regex pattern:\n{str(e)}")
-                return False
-        
-        # Confirm action
-        file_count = len(self.file_paths)
-        case_sensitive = self.case_sensitive_var.get()
-        case_info = " (case sensitive)" if case_sensitive else " (case insensitive)"
-        regex_info = " [REGEX]" if use_regex else ""
-        action_text = "replace all occurrences and close the application" if close_after else "replace all occurrences"
-        if not messagebox.askyesno("Confirm", 
-                                  f"This will {action_text} in {file_count} file(s){case_info}{regex_info}.\n\nContinue?"):
-            return False
-        
-        try:
-            self.status_label.config(text="Processing files...", fg="orange")
-            self.progress_frame.pack(fill=tk.X, pady=(10, 0))
-            self.root.update()
-            
-            total_replacements = 0
-            successful_files = 0
-            backup_files = []
-            all_results = []  # NEW: Store detailed results
-            
-            for i, file_path in enumerate(self.file_paths):
-                # Update progress with percentage
-                progress_percent = int((i / file_count) * 100)
-                self.progress_label.config(text=f"Processing {i+1}/{file_count}: {os.path.basename(file_path)}")
-                self.progress_percent_label.config(text=f"Progress: {progress_percent}%")
-                self.root.update()
-                
-                try:
-                    # Create backup if requested
-                    if self.create_backup_var.get():
-                        backup_path = file_path + ".backup"
-                        import shutil
-                        shutil.copy2(file_path, backup_path)
-                        backup_files.append(backup_path)
-                    
-                    # Process the document
-                    doc = Document(file_path)
-                    file_replacements = 0
-                    whole_word = self.whole_word_var.get()
-                    
-                    # Replace in paragraphs
-                    for paragraph in doc.paragraphs:
-                        file_replacements += self.replace_in_paragraph_advanced(paragraph, search_for, replace_with, case_sensitive, use_regex, whole_word)
-                    
-                    # Replace in tables (including nested tables)
-                    for table in doc.tables:
-                        file_replacements += self._replace_in_table(table, search_for, replace_with, case_sensitive, use_regex, whole_word)
-                    
-                    # Save the document
-                    doc.save(file_path)
-                    
-                    # Store detailed results
-                    all_results.append({
-                        'filename': os.path.basename(file_path),
-                        'total': file_replacements,
-                        'details': [f"  📄 Main content replacements: {file_replacements}"] if file_replacements > 0 else ["  ✅ No replacements needed"]
-                    })
-                    
-                    total_replacements += file_replacements
-                    successful_files += 1
-                    
-                except Exception as e:
-                    all_results.append({
-                        'filename': os.path.basename(file_path),
-                        'total': 0,
-                        'details': [f"  ❌ Error: {str(e)}"]
-                    })
-            
-            # Final progress update
-            self.progress_percent_label.config(text="Progress: 100%")
-            self.root.update()
-            
-            self.progress_frame.pack_forget()
-            self.status_label.config(text="Replacement completed!", fg="green")
-            
-            # Refresh text cache so live counter reflects the updated files
-            self._refresh_text_cache()
-            self._schedule_live_count()
-            
-            # Show enhanced results instead of simple messagebox
-            self.show_replace_all_results(all_results, search_for, replace_with, total_replacements, 
-                                         successful_files, backup_files, close_after)
-            
-            return True
-            
-        except Exception as e:
-            self.status_label.config(text="Error occurred", fg="red")
-            messagebox.showerror("Error", f"An error occurred: {str(e)}")
-            return False
-
-    def show_replace_all_results(self, results, search_text, replace_text, total_replacements, successful_files, backup_files, close_after):
-        """Show Replace results in scrollable window"""
-        case_sensitive = self.case_sensitive_var.get()
-        case_info = " (case sensitive)" if case_sensitive else " (case insensitive)"
-        
-        message = "-" * 46 + "\n"
-        message += f"✅ Standard Replace results{case_info}\n"
-        message += "-" * 46 + "\n\n" 
-        message += f"🎉 Completed: {total_replacements} replacement(s) in main document content\n\n"
-        message += f"📊 Summary:\n"
-        message += f"Files processed: {successful_files}/{len(self.file_paths)}\n"
-        message += f"Total replacements: {total_replacements}\n"
-        message += f"Search text: '{search_text[:40]}{'...' if len(search_text) > 40 else ''}'\n"
-        message += f"Replace text: '{replace_text[:40]}{'...' if len(replace_text) > 40 else ''}'\n"
-        message += f"Coverage: Main text and tables\n"
-        
-        if backup_files:
-            message += f"Backup files created: {len(backup_files)}\n"
-        
-        message += "=" * 77 + "\n\n"
-        
-        # Show detailed file results
-        for i, result in enumerate(results, 1):
-            message += f"📁 FILE {i}: {result['filename']}\n"
-            if result['total'] > 0:
-                message += f"   ✅ Replacements made: {result['total']}\n"
-            else:
-                message += f"   ✅ No replacements needed\n"
-            
-            for detail in result['details']:
-                message += f"   {detail}\n"
-            message += "\n" + "=" * 77 + "\n\n"
-        
-        if close_after:
-            message += "🚪 The application will close after you click OK.\n\n"
-        
-        # Show results and handle close_after
-        if close_after:
-            # For close_after, show results then close
-            result_window = tk.Toplevel(self.root)
-            result_window.title("Standard Replace results")
-            result_window.geometry("600x500")
-            result_window.resizable(True, True)
-            
-            text_widget = scrolledtext.ScrolledText(result_window, wrap=tk.WORD, 
-                                                   font=("Consolas", 9), padx=10, pady=10)
-            text_widget.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-            text_widget.insert("1.0", message)
-            text_widget.config(state=tk.DISABLED)
-            
-            def close_and_exit():
-                result_window.destroy()
-                self.root.destroy()
-            
-            close_btn = tk.Button(result_window, text="Close application", 
-                                 command=close_and_exit,
-                                 bg="#333333", fg="white", font=("Arial", 10, "bold"))
-            close_btn.pack(pady=(0, 10))
-            
-            result_window.transient(self.root)
-            result_window.grab_set()
-        else:
-            # Normal scrollable results
-            self.show_scrollable_results(message, "Standard Replace results")
-
-    # Advanced Replace with Word COM Automation
-    def advanced_replace_with_vba(self):
-        """Advanced replace using Word COM automation for ALL document areas"""
-        if not self.file_paths:
-            messagebox.showwarning("Warning", "Please add at least one Word document.")
-            return
-        
-        if not HAS_WIN32COM:
-            messagebox.showerror("Error", 
-                "Advanced replace requires the 'pywin32' package.\n\n"
-                "Install it with: pip install pywin32")
-            return
-        
-        if self.regex_var.get():
-            messagebox.showinfo("Regex Not Supported", 
-                "Regex is only supported with Standard Replace.\n\n"
-                "Advanced Replace uses Word's native Find & Replace engine\n"
-                "which does not support Python regex syntax.\n\n"
-                "Please uncheck 'Regex' or use Standard Replace instead.")
-            return
-            
-        search_for = self.get_processed_search_text()
-        replace_with = self.get_processed_replace_text()
-        
-        if not search_for:
-            messagebox.showwarning("Warning", "Please enter text to search for.")
-            return
-        
-        # Confirm action
-        file_count = len(self.file_paths)
-        case_sensitive = self.case_sensitive_var.get()
-        case_info = " (case sensitive)" if case_sensitive else " (case insensitive)"
-        if not messagebox.askyesno("Confirm Advanced Replace", 
-                                  f"This will replace text in all document areas in {file_count} file(s){case_info}.\n\n" +
-                                  f"Areas covered: Main content, shapes, headers, footers, footnotes, endnotes, form fields, hyperlinks\n\n" +
-                                  f"Search: '{search_for[:30]}{'...' if len(search_for) > 30 else ''}'\n" +
-                                  f"Replace: '{replace_with[:30]}{'...' if len(replace_with) > 30 else ''}'\n\n" +
-                                  "Continue?"):
-            return
-        
-        word_app = None
-        try:
-            self.status_label.config(text="Processing advanced replacements...", fg="orange")
-            self.progress_frame.pack(fill=tk.X, pady=(10, 0))
-            self.root.update()
-            
-            all_results = []
-            total_advanced_replacements = 0
-            successful_files = 0
-            errors = []
-            
-            # Open Word once for all files
-            word_app = win32com.client.Dispatch("Word.Application")
-            word_app.Visible = False
-            word_app.DisplayAlerts = False
-            word_app.ScreenUpdating = False
-            
-            for i, file_path in enumerate(self.file_paths):
-                # Update progress
-                progress_percent = int((i / file_count) * 100)
-                self.progress_label.config(text=f"Processing {i+1}/{file_count}: {os.path.basename(file_path)}")
-                self.progress_percent_label.config(text=f"Progress: {progress_percent}%")
-                self.root.update()
-                
-                doc = None
-                try:
-                    # Create backup if requested
-                    if self.create_backup_var.get():
-                        backup_path = file_path + ".backup"
-                        import shutil
-                        shutil.copy2(file_path, backup_path)
-                    
-                    full_path = os.path.abspath(file_path)
-                    doc = word_app.Documents.Open(full_path)
-                    
-                    file_replacements = 0
-                    details = []
-                    
-                    # Pre-cache shape ranges for O(n) hyperlink-in-shape check
-                    shape_ranges = self._build_shape_ranges(doc)
-                    whole_word = self.whole_word_var.get()
-                    
-                    # Replace in text boxes / shapes via StoryRanges (wdTextFrameStory = 5)
-                    # This catches ALL text boxes regardless of how they were inserted
-                    shape_count = 0
-                    try:
-                        story = doc.StoryRanges(5)  # wdTextFrameStory
-                        while story:
-                            if len(story.Text) > 1:
-                                shape_count += self._find_replace_count(
-                                    story, search_for, replace_with, case_sensitive, whole_word)
-                            try:
-                                story = story.NextStoryRange
-                            except Exception:
-                                break
-                    except Exception:
-                        pass
-                    if shape_count > 0:
-                        details.append(f"  📦 Text boxes: {shape_count} replacement(s)")
-                        file_replacements += shape_count
-                    
-                    # Replace in headers
-                    header_count = 0
-                    for section in doc.Sections:
-                        for idx in range(1, 4):
-                            try:
-                                if section.Headers(idx).Exists:
-                                    if len(section.Headers(idx).Range.Text) > 1:
-                                        header_count += self._find_replace_count(
-                                            section.Headers(idx).Range, search_for, replace_with, case_sensitive, whole_word)
-                            except Exception:
-                                pass
-                    if header_count > 0:
-                        details.append(f"  📄 Headers: {header_count} replacement(s)")
-                        file_replacements += header_count
-                    
-                    # Replace in footers
-                    footer_count = 0
-                    for section in doc.Sections:
-                        for idx in range(1, 4):
-                            try:
-                                if section.Footers(idx).Exists:
-                                    if len(section.Footers(idx).Range.Text) > 1:
-                                        footer_count += self._find_replace_count(
-                                            section.Footers(idx).Range, search_for, replace_with, case_sensitive, whole_word)
-                            except Exception:
-                                pass
-                    if footer_count > 0:
-                        details.append(f"  📄 Footers: {footer_count} replacement(s)")
-                        file_replacements += footer_count
-                    
-                    # Replace in footnotes
-                    footnote_count = 0
-                    for footnote in doc.Footnotes:
-                        try:
-                            if len(footnote.Range.Text) > 1:
-                                footnote_count += self._find_replace_count(
-                                    footnote.Range, search_for, replace_with, case_sensitive, whole_word)
-                        except Exception:
-                            pass
-                    if footnote_count > 0:
-                        details.append(f"  📝 Footnotes: {footnote_count} replacement(s)")
-                        file_replacements += footnote_count
-                    
-                    # Replace in endnotes
-                    endnote_count = 0
-                    for endnote in doc.Endnotes:
-                        try:
-                            if len(endnote.Range.Text) > 1:
-                                endnote_count += self._find_replace_count(
-                                    endnote.Range, search_for, replace_with, case_sensitive, whole_word)
-                        except Exception:
-                            pass
-                    if endnote_count > 0:
-                        details.append(f"  📝 Endnotes: {endnote_count} replacement(s)")
-                        file_replacements += endnote_count
-                    
-                    # Replace in form fields (no Find.Execute — direct text manipulation)
-                    form_field_count = 0
-                    for field in doc.FormFields:
-                        try:
-                            if field.Type == 70:  # wdFieldFormTextInput
-                                original_text = field.Result
-                                if len(original_text) > 0:
-                                    # Strip invisible chars for matching AND replacement
-                                    clean_text = self._strip_invisible_chars(original_text)
-                                    occ = self.count_occurrences(clean_text, search_for, case_sensitive, False, whole_word)
-                                    if occ > 0:
-                                        if whole_word:
-                                            pattern = r'\b' + re.escape(search_for) + r'\b'
-                                            flags = 0 if case_sensitive else re.IGNORECASE
-                                            new_text = re.sub(pattern, replace_with, clean_text, flags=flags)
-                                        elif case_sensitive:
-                                            new_text = clean_text.replace(search_for, replace_with)
-                                        else:
-                                            pattern = re.escape(search_for)
-                                            new_text = re.sub(pattern, replace_with, clean_text, flags=re.IGNORECASE)
-                                        field.Result = new_text
-                                        form_field_count += occ
-                        except Exception:
-                            pass
-                    if form_field_count > 0:
-                        details.append(f"  📋 Form fields: {form_field_count} replacement(s)")
-                        file_replacements += form_field_count
-                    
-                    # Replace in main document content using iterative Find (Option A)
-                    # (this covers paragraphs, tables, and inline hyperlink text)
-                    main_content_count = self._find_replace_count(
-                        doc.Content, search_for, replace_with, case_sensitive, whole_word)
-                    
-                    # Count hyperlink replacements that were part of main content
-                    # (for accurate per-area reporting, not for additional replacement)
-                    hyperlink_count = 0
-                    for hyperlink in doc.Hyperlinks:
-                        try:
-                            hl_range = hyperlink.Range
-                            if hl_range is None:
-                                continue
-                            if not self._is_in_shape_ranges(hl_range.Start, hl_range.End, shape_ranges):
-                                display_text = hl_range.Text
-                                if display_text and len(display_text) > 0:
-                                    occ = self.count_occurrences(display_text, replace_with, case_sensitive, False, whole_word) if replace_with else 0
-                                    if occ > 0:
-                                        hyperlink_count += occ
-                        except Exception:
-                            pass
-                    
-                    # Report main content minus hyperlink portion to avoid double-counting
-                    non_hyperlink_main = max(0, main_content_count - hyperlink_count)
-                    if non_hyperlink_main > 0:
-                        details.append(f"  📄 Main content: {non_hyperlink_main} replacement(s)")
-                        file_replacements += non_hyperlink_main
-                    if hyperlink_count > 0:
-                        details.append(f"  🔗 Hyperlinks: {hyperlink_count} replacement(s)")
-                        file_replacements += hyperlink_count
-                    
-                    # Save and close document
-                    doc.Save()
-                    doc.Close()
-                    doc = None
-                    
-                    all_results.append({
-                        'filename': os.path.basename(file_path),
-                        'total': file_replacements,
-                        'details': details if details else ["  ✅ No advanced matches found"]
-                    })
-                    
-                    total_advanced_replacements += file_replacements
-                    successful_files += 1
-                    
-                except Exception as e:
-                    if doc:
-                        try:
-                            doc.Close(False)
-                        except Exception:
-                            pass
-                        doc = None
-                    all_results.append({
-                        'filename': os.path.basename(file_path),
-                        'total': 0,
-                        'details': [f"  ❌ Error: {str(e)}"]
-                    })
-                    errors.append(f"{os.path.basename(file_path)}: {str(e)}")
-            
-            # Final progress update
-            self.progress_percent_label.config(text="Progress: 100%")
-            self.root.update()
-            
-            self.progress_frame.pack_forget()
-            self.status_label.config(text="Advanced replacement completed!", fg="green")
-            
-            # Refresh text cache so live counter reflects the updated files
-            self._refresh_text_cache()
-            self._schedule_live_count()
-            
-            # Show results in scrollable window
-            self.show_advanced_replace_results(all_results, search_for, replace_with, total_advanced_replacements, successful_files, errors)
-            
-        except Exception as e:
-            self.status_label.config(text="Error occurred", fg="red")
-            messagebox.showerror("Error", f"Advanced replace error: {str(e)}")
-        finally:
-            try:
-                if word_app:
-                    word_app.ScreenUpdating = True
-                    word_app.Quit()
-            except Exception:
-                pass
-
-    def show_advanced_replace_results(self, results, search_text, replace_text, total_replacements, successful_files, errors):
-        """Show advanced replace results in scrollable window"""
-        case_sensitive = self.case_sensitive_var.get()
-        case_info = " (case sensitive)" if case_sensitive else " (case insensitive)"
-        
-        message = "-" * 46 + "\n"
-        message += f"🔧 Advanced Replace results{case_info}\n"
-        message += "-" * 46 + "\n\n"
-        message += f"✅ Completed: {total_replacements} replacement(s) in ALL document areas\n\n"
-        message += f"📊 Summary:\n"
-        message += f"Files processed: {successful_files}/{len(self.file_paths)}\n"
-        message += f"Total advanced replacements: {total_replacements}\n"
-        message += f"Search text: '{search_text[:40]}{'...' if len(search_text) > 40 else ''}'\n"
-        message += f"Replace text: '{replace_text[:40]}{'...' if len(replace_text) > 40 else ''}'\n"
-        message += f"Coverage: Complete document (main content + all advanced areas)\n"
-        message += "=" * 77 + "\n\n"
-        
-        # Show detailed file results
-        for i, result in enumerate(results, 1):
-            message += f"📁 FILE {i}: {result['filename']}\n"
-            if result['total'] > 0:
-                message += f"   ✅ Advanced replacements: {result['total']}\n"
-            else:
-                message += f"   ✅ No advanced matches found\n"
-            
-            for detail in result['details']:
-                message += f"   {detail}\n"
-            message += "\n" + "=" * 77 + "\n\n"
-        
-        if errors:
-            message += f"❌ Errors:\n"
-            for error in errors:
-                message += f"• {error}\n"
-            message += "\n"
-        
-        self.show_scrollable_results(message, "Advanced Replace results")
-    
-    def show_scrollable_results(self, message, title):
-        """Show results in a scrollable window for long messages"""
-        result_window = tk.Toplevel(self.root)
-        result_window.title(title)
-        result_window.geometry("600x500")
-        result_window.resizable(True, True)
-        
-        # Create scrolled text widget
-        text_widget = scrolledtext.ScrolledText(result_window, wrap=tk.WORD, 
-                                               font=("Consolas", 9), padx=10, pady=10)
-        text_widget.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        
-        # Insert the message
-        text_widget.insert("1.0", message)
-        text_widget.config(state=tk.DISABLED)  # Make it read-only
-        
-        # Button frame for two buttons
-        button_frame = tk.Frame(result_window)
-        button_frame.pack(pady=(0, 10))
-        
-        # OK button (just closes result window)
-        ok_btn = tk.Button(button_frame, text="OK", 
-                          command=result_window.destroy,
-                          bg="#4caf50", fg="white", font=("Arial", 10))
-        ok_btn.pack(side=tk.LEFT, padx=(0, 10))
-        
-        # Close application button (closes result window AND main app)
-        def close_application():
-            result_window.destroy()
-            self.root.destroy()
-        
-        close_app_btn = tk.Button(button_frame, text="Close application", 
-                                 command=close_application,
-                                 bg="#333333", fg="white", font=("Arial", 10))
-        close_app_btn.pack(side=tk.LEFT)
-        
-        # Center the window
-        result_window.transient(self.root)
-        result_window.grab_set()
-#########END OF PART 3B######
-
-
-
-
-#########PART 4 (FINAL)######
     def run(self):
         self.root.mainloop()
 
+
+# Backwards compatibility wrapper alias
+WordTextReplacerSingle = WordTextReplacerApp
+
+
 def main():
-    # Get the initial file from command line (if any)
     initial_file = sys.argv[1] if len(sys.argv) > 1 else None
-    
-    # Validate the initial file
     if initial_file and not os.path.exists(initial_file):
         initial_file = None
-    
-    if initial_file and not initial_file.lower().endswith(('.docx', '.doc', '.docm')):
+    if initial_file and not initial_file.lower().endswith((".docx", ".doc", ".docm")):
         initial_file = None
-    
+
     try:
-        app = WordTextReplacerSingle(initial_file)
+        app = WordTextReplacerApp(initial_file)
         app.run()
-        
-    except Exception as e:
-        messagebox.showerror("Error", f"Failed to start application: {str(e)}")
+    except Exception as exc:
+        messagebox.showerror("启动失败", f"应用程序启动异常：{str(exc)}")
+
 
 if __name__ == "__main__":
     main()
-
-#########END OF PART 4 (FINAL)######

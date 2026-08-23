@@ -1,0 +1,81 @@
+name: Build Cross-Platform (Windows & macOS)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "codex/**"
+      - "main"
+      - "master"
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: "x64"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run automated tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Build Windows executable
+        run: pyinstaller --clean --noconfirm WordTextReplacer.spec
+
+      - name: Smoke-check executable
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "dist/WordTextReplacer.exe")) {
+            throw "dist/WordTextReplacer.exe was not created"
+          }
+          Get-Item "dist/WordTextReplacer.exe" | Format-List Name,Length,LastWriteTime
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WordTextReplacer-Windows-EXE
+          path: dist/WordTextReplacer.exe
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run automated tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Build macOS Application Bundle
+        run: pyinstaller --clean --noconfirm WordTextReplacer_mac.spec
+
+      - name: Smoke-check macOS app bundle
+        run: |
+          if [ ! -d "dist/WordTextReplacer.app" ]; then
+            echo "dist/WordTextReplacer.app was not created"
+            exit 1
+          fi
+          ls -la dist/WordTextReplacer.app/Contents/MacOS/WordTextReplacer
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WordTextReplacer-macOS-APP
+          path: dist/WordTextReplacer.app

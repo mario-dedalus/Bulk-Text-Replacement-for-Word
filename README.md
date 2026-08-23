@@ -1,142 +1,147 @@
 # Bulk Text Replacement for Word
-🎯 Easy-to-use tool for text replacements across multiple Word documents at the same time. Handles hyperlinks, text boxes, headers, footers safely. Previews changes with diff context and processes multiple files at once. Real-time match counter shows results as you type. Perfect for bulk document updates. Download exe, no installation needed! Made for efficiency.⚡
 
-## 🚀 Quick start
-
-### Option 1: Download executable
-1. Go to [**exe**](exe) and download `WordTextReplacer.exe`.
-2. Double-click to run. **No installation required!**
-3. Add your Word documents and start replacing text.
-
-### Option 2: Download executable and add it to your context menu (recommended for the fastest approach)
-1. Go to [**exe**](exe) and download `WordTextReplacer.exe`.
-2. Save it to your preferred path. **no installation required!**
-3. Go to [**c_m_e**](c_m_e) and download `add_word_text_replacer_to_your_context_menu.reg`.
-4. Adapt the .reg file by inserting the path where you saved `WordTextReplacer.exe` (step 2) in line 8 and 15.
-   (Optional: Edit the icon in line 4 & 11 and the text of the context menu line 5 & 12.)
-6. Run the .reg file and confirm that you want to add it to registry editor. Afterwards, you can delete the .reg file. This is a one-time effort only.
-7. Right-click on any .doc/.docx/.docm file and click on your context menu entry to run the script.
-   (Optional: Add more files in which you want to run the search and replace workflow.)
-9. Start replacing text.
-
-### Option 3: You're a developer? Use the code and have fun! 
-It's just one Python file — download it from [**src**](src) and play around with it. :)
-
-## ✨ Features and best practices
-
-| Feature | Standard Replace | Advanced Replace |
-|---------|------------------|------------------|
-| **Speed** | ⚡ Very fast | 🔧 Comprehensive |
-| **Main content** | ✅ Paragraphs & tables | ✅ Paragraphs & tables |
-| **Text boxes** | ❌ | ✅ All types |
-| **Headers & footers** | ❌ | ✅ |
-| **Footnotes & endnotes** | ❌ | ✅ |
-| **Form fields** | ❌ | ✅ |
-| **Formatting preserved?** | ✅ | ✅ |
-| **Hyperlinks** | ⚠️ Replaces text, but removes link. | ✅ Replaces text and preserves links. |
-| **Regex support** | ✅ Python regex syntax | ❌ (Word's native engine) |
-| **Whole word match** | ✅ | ✅ |
-| **Case sensitive** | ✅ | ✅ |
-
-#### When to use Standard Replace
-Large batch operations (100+ files)/Simple text in paragraphs and tables/No hyperlinks in replacement text/Speed is important/Regex patterns needed
-- **Remember:** If your file has "special content" (text boxes, headers, footers, footnotes, endnotes, form fields, and hyperlinks), but you are not going to replace any of this text, you can still use the very fast Standard Replace. It won't break any of your "special content".
-
-#### When to use Advanced Replace
-If you are going to replace "special content", use Advanced Replace as it will work for both standard content, such as paragraphs and tables, and "special content". It is just slower than the Standard Replace as it uses Word COM automation instead of python-docx.
-
-#### Why does the tool offer Standard Replace if Advanced Replace covers everything?
-Sometimes you just want to replace a text snippet which is not present in any "special content" and you want to do that as fast as possible. Therefore, I added the very fast Standard Replace (which will maintain formatting, don't worry!).
-
-### Additional features
-- 📊 **Real-time match counter**: See match count update live as you type — no need to run a preview first.
-- 👀 **Preview with diff context**: See what will be changed, including surrounding text context for each match.
-- 🔗 **Hyperlink check**: Analyze documents for hyperlinks before deciding which replace method to use.
-- 🔤 **Whole word match**: Option to match whole words only.
-- 🔣 **Regex support**: Full Python regex support for Standard Replace/Preview.
-- 📝 **Non-breaking space support**: Use `_nbsp_` or Shift+Space.
-- 🔍 **Invisible character handling**: Automatically strips soft hyphens and zero-width characters that Word inserts — so your searches always match what you see.
-- 📁 **Batch processing**: Handle multiple documents at once.
-- 💾 **Backup creation**: Optional backup files.
-- ⌨️ **Keyboard shortcuts**: Efficient workflow.
-
-## The tool
-
-### 📸 Screenshot
-
-<img width="526" height="556" alt="grafik" src="https://github.com/user-attachments/assets/272e3821-4496-4f14-bf70-f185774e284b" />
-
-### ▶️ YouTube
-
-This video, with a slightly outdated UI, shows the [tool in action](https://www.youtube.com/watch?v=ff8-k-COUYc).
-
-If you don't want to hear me talking for too long, just jump to [3:30](https://youtu.be/ff8-k-COUYc?si=H4sXY8syJmcAigQc&t=210).
-
-### 🎯 Use cases (examples)
-
-- **Legal documents**: Update contract terms across multiple files.
-- **Technical documentation**: Replace product names or versions.
-- **Marketing materials**: Update company information or branding.
-- **Academic papers**: Standardize terminology or citations.
-- **Corporate communications**: Update contact information or policies.
-
-### ⌨️ Keyboard shortcuts (excerpt)
-
-| Shortcut | Action |
-|----------|--------|
-| `F5` | Preview changes |
-| `Ctrl+Enter` | Standard Replace |
-| `Ctrl+Shift+Enter` | Standard Replace and automatically close the application afterwards |
-| `Shift+Enter` | Advanced Replace |
-| `Ctrl+O` | Add more files |
-| `Shift+Space` | Insert non-breaking space |
-| `Ctrl+1/2` | Focus search/replace boxes |
-| `Tab` | Switch between search & replace boxes |
-| `Delete` | Remove selected files (when file list is focused) |
-
-### 📋 System requirements
-
-- **OS**: Windows 7/8/10/11
-- **Software**: Microsoft Word (for Advanced Replace features)
-- **Installation**: None required for executable version
-
-## Project structure
-```
-WordTextReplacer/
-├── _legacy/                   # legacy version (v1)
-├── c_m_e/                     # .reg file
-├── doc/                       # User Manual
-├── exe/                       # .exe file
-└── src/                       # Source Code (single .py file)
-```
-
-## 🤝 Contributing
-
-Contributions are welcome! I am not an experienced developer. If you have ideas/upgrades/improvements, I am happy to see your code!
-
-1. Fork the repository.
-2. Create a feature branch.
-3. Make your changes.
-4. Submit a pull request.
-
-## 📄 License
-
-Licensed under a Source-Available License (Apache 2.0 + No Selling clause). – See [LICENSE](LICENSE) for details.
-
-## 🫶 Support
-
-The tool is free and I am happy with sharing it with whoever wants to use it. If you want, you can [buy me a coffee](https://buymeacoffee.com/abbatem). ☕🙏 And connect with [me](https://www.linkedin.com/in/mario-abbate-601885150/)!
-
-## 🏆 Acknowledgments
-
-- Built with Python and tkinter for the GUI.
-- Word COM automation (pywin32) for advanced document operations.
-- python-docx for fast document processing.
-- I used AI to create this tool. :)
+🎯 Modern, cross-platform desktop application for batch text replacement and mail-merge document generation across Microsoft Word documents. Built with **PySide6** and **Windows 11 Fluent Design / macOS Native styling**.
 
 ---
 
-⬛🟦⬛ **Forza Inter!** ⬛🟦⬛ 
+## 🚀 Quick Start
 
-*Made with enthusiasm for efficient document processing.*
+### Option 1: Run Pre-built Executable
+- **Windows**: Download `WordTextReplacer.exe` from GitHub Releases / Actions artifacts. No installation required.
+- **macOS**: Download `WordTextReplacer.app` from GitHub Releases / Actions artifacts (currently available via Actions developer build artifacts).
 
+### Option 2: Run from Source
+
+```bash
+# Clone the repository
+git clone https://github.com/chaos-lawyer/Bulk-Text-Replacement-for-Word.git
+cd Bulk-Text-Replacement-for-Word
+
+# Set up Python environment (Python 3.10 - 3.13 recommended)
+python3 -m venv .venv
+
+# On macOS/Linux:
+source .venv/bin/activate
+pip install -r requirements.txt
+python src/app.py
+
+# On Windows:
+.venv\Scripts\activate
+pip install -r requirements.txt
+python src\app.py
+```
+
+---
+
+## 🧩 Key Features
+
+### 1. 🔍 Batch Text Replacement (`文本查找替换`)
+- **Fast Mode (Recommended)**: Powered by `python-docx`. Blazing fast, preserves run formatting, supports Python regular expressions, and works seamlessly across macOS, Windows, and Linux.
+- **Full Mode (Windows Word COM)**: Powered by Microsoft Word COM automation (`pywin32`). Comprehensively processes headers, footers, shapes, text boxes, and preserves existing hyperlinks.
+- **Real-Time Match Counter**: Live match count updates asynchronously with generational race protection.
+- **Preview with Context**: Inspect replacements and surrounding snippets before modifying any files on disk.
+- **Hyperlink Inspector**: Asynchronously scan and inspect all embedded URLs in selected documents with cancellation support.
+- **Non-Breaking Spaces (NBSP)**: Automatically cleans soft hyphens, zero-width spaces, and normalizes `\u00a0`.
+
+### 2. 📑 Template Batch Merge (`模板批量生成`)
+- **Strict 3-Step Guided Workflow**:
+  - **Step 1**: Choose Word template (`.docx` / `.docm`), Excel or CSV data source (`.xlsx` / `.csv` / `.xlsm`), output folder, and dynamic filename rule (e.g. `{{Client}}-{{ContractNo}}.docx` or `{{序号}}-{{Client}}.docx`). Source files are verified on disk before scanning.
+  - **Step 2**: Interactive 4-column field mapping table with dropdown selection (`QTableView` + `ComboBoxDelegate`) mapping `{{Variable}}` to table columns, plus editable empty-field default fallbacks. Changing output folder/filename rule preserves existing field mappings.
+  - **Step 3**: Instant preview of first 5 rows and asynchronous batch generation with real-time log and platform fixed-width typography.
+- **Safe & Non-Destructive**: Never alters template files and automatically avoids duplicate output filename collisions.
+
+### 3. 📑 Multi-Document Differentiated Replacement (`多文档匹配替换`)
+- **1-to-1 Document-to-Row Data Alignment**: Bind multiple distinct Word documents with multiple rows of variable data to fill individual variables across documents simultaneously.
+- **Three Data Entry Modes**:
+  - **Pure Manual Entry**: Type replacement values directly into table cells without needing an Excel file.
+  - **Excel / CSV Smart Alignment**: Import table data with automatic column header matching or sequential row filling.
+  - **In-Place Manual Override**: Cells remain editable after Excel import to make instant adjustments without modifying the original spreadsheet.
+- **Flexible Output & Backup**: Supports modifying files in place (with automatic `.backup` creation) or exporting to a designated output folder.
+
+### 4. 🎨 Modern Cross-Platform UI & Architecture
+- **Windows 11 Fluent & macOS Native Design**: 8px card surfaces, fixed bottom action bar for persistent 100% visibility, single primary accent button per view, dynamic system theme synchronization, and light/dark theme toggle.
+- **Non-Blocking Background Workers**: All file parsing, replacements, and generations run asynchronously on `QThreadPool` with signature pre-inspection, progress reporting, cancel support, and clean graceful window closing.
+- **Accessibility (a11y)**: Built-in accessible names, descriptions, and keyboard arrow navigation across tabs.
+
+---
+
+## ⌨️ Keyboard Shortcuts
+
+| Shortcut | Action |
+|---|---|
+| `Ctrl+O` / `Cmd+O` | Add Word documents / browse template |
+| `Ctrl+R` / `Cmd+R` | Execute Replace / Start Batch Merge / Start Multi-Doc Replace |
+| `Ctrl+P` / `Cmd+P` | Preview changes |
+| `Delete` | Remove selected document(s) from list |
+| `Left` / `Right` Arrow | Switch between Navigation Tabs |
+| `F1` | Open User Guide & Shortcuts dialog |
+
+---
+
+## 🏗️ Project Architecture
+
+```text
+Bulk-Text-Replacement-for-Word/
+├── src/
+│   ├── app.py                         # Primary application entry point (PySide6)
+│   ├── core/                          # Pure Python core engines (Zero GUI dependencies)
+│   │   ├── replacer_core.py           # Text search, replacement & regex engine
+│   │   ├── template_merge.py          # Word template + Excel/CSV mail merge engine
+│   │   ├── multi_doc_replacer.py      # Multi-doc variable scan & differentiated replace engine
+│   │   └── models.py                  # Core data classes (ExcelData, MultiDocItem, etc.)
+│   ├── platform_adapter/              # OS capability, theme & file manager integration
+│   │   ├── capabilities.py            # OS & Word COM capability detection
+│   │   ├── appearance.py              # System dark mode & DWM accent color
+│   │   └── file_manager.py            # Explorer / Finder file revelation
+│   ├── application/                   # Services, task models & async workers
+│   │   ├── replace_service.py         # Text replacement orchestration
+│   │   ├── merge_service.py           # Template merge orchestration
+│   │   ├── multi_doc_service.py       # Multi-doc replacement orchestration
+│   │   ├── task_models.py             # TaskProgress, TaskState, CancellationToken
+│   │   └── workers.py                 # QThreadPool / QRunnable background workers
+│   └── ui/                            # PySide6 UI layer
+│       ├── main_window.py             # QMainWindow with top navigation & status bar
+│       ├── pages/                     # ReplacePage, MergePage & MultiDocPage
+│       ├── models/                    # FileListModel, FieldMappingModel, MultiDocMappingModel
+│       ├── delegates/                 # MappingComboDelegate
+│       ├── widgets/                   # FluentCard, SegmentedNav, FluentStatusBar
+│       └── theme/                     # Token definitions & QSS stylesheets
+├── tests/                             # Unit & integration test suite (54 automated tests)
+
+├── WordTextReplacer.spec              # Windows PyInstaller standalone spec
+├── WordTextReplacer_mac.spec          # macOS PyInstaller .app bundle spec
+└── requirements.txt                   # Dependency definitions
+```
+
+---
+
+## 📦 Building Standalone Packages
+
+### Windows (.exe)
+```bat
+.venv\Scripts\pip install -r requirements.txt
+.venv\Scripts\pyinstaller --clean --noconfirm WordTextReplacer.spec
+# Output: dist/WordTextReplacer.exe
+```
+
+### macOS (.app)
+```bash
+./build_macos.sh
+# Output: dist/WordTextReplacer.app
+```
+
+---
+
+## 🧪 Testing
+
+Run the full automated test suite:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+---
+
+## 📄 License
+
+Source-Available License (Apache 2.0 + No Selling clause). See [LICENSE](LICENSE) for details.

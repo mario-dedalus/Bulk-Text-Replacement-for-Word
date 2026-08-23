@@ -1,0 +1,180 @@
+/* Windows 11 Fluent Design Stylesheet */
+
+QMainWindow {
+    background-color: @window_bg@;
+}
+
+QWidget {
+    color: @text_primary@;
+    font-family: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+    font-size: 13px;
+}
+
+QScrollArea,
+QScrollArea > QWidget,
+QScrollArea::viewport,
+QWidget[isPageContent="true"] {
+    background-color: @window_bg@;
+    border: none;
+}
+
+/* Fluent Card Surface */
+QFrame[isCard="true"] {
+    background-color: @card_bg@;
+    border: 1px solid @border_subtle@;
+    border-radius: 8px;
+}
+
+QLabel#CardTitle {
+    font-size: 14px;
+    font-weight: 600;
+    color: @text_primary@;
+}
+
+QLabel#CardSubtitle {
+    font-size: 12px;
+    color: @text_secondary@;
+}
+
+QLabel#AppTitle {
+    font-size: 16px;
+    font-weight: 700;
+    color: @text_primary@;
+}
+
+/* Primary Accent Button (Unique per page) */
+QPushButton[isPrimary="true"] {
+    background-color: @accent@;
+    color: @accent_text@;
+    border: 1px solid @accent@;
+    border-radius: 4px;
+    padding: 6px 18px;
+    font-weight: 600;
+    min-height: 22px;
+}
+
+QPushButton[isPrimary="true"]:hover {
+    background-color: @accent_hover@;
+    border-color: @accent_hover@;
+}
+
+QPushButton[isPrimary="true"]:pressed {
+    background-color: @accent_pressed@;
+    border-color: @accent_pressed@;
+}
+
+QPushButton[isPrimary="true"]:disabled {
+    background-color: @border_subtle@;
+    color: @text_placeholder@;
+    border-color: @border_subtle@;
+}
+
+/* Secondary Button */
+QPushButton {
+    background-color: @button_bg@;
+    color: @text_primary@;
+    border: 1px solid @button_border@;
+    border-radius: 4px;
+    padding: 5px 12px;
+    min-height: 20px;
+}
+
+QPushButton:hover {
+    background-color: @button_hover@;
+}
+
+QPushButton:pressed {
+    background-color: @button_pressed@;
+}
+
+QPushButton:disabled {
+    background-color: transparent;
+    color: @text_placeholder@;
+    border-color: @border_subtle@;
+}
+
+/* Ghost / Tool Button */
+QPushButton[isGhost="true"] {
+    background-color: transparent;
+    color: @text_secondary@;
+    border: none;
+    border-radius: 4px;
+    padding: 4px 8px;
+}
+
+QPushButton[isGhost="true"]:hover {
+    background-color: @button_hover@;
+    color: @text_primary@;
+}
+
+/* Input Fields */
+QLineEdit, QTextEdit, QPlainTextEdit {
+    background-color: @entry_bg@;
+    color: @text_primary@;
+    border: 1px solid @entry_border@;
+    border-radius: 4px;
+    padding: 5px 8px;
+    selection-background-color: @accent@;
+    selection-color: @accent_text@;
+}
+
+QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {
+    border: 2px solid @accent@;
+}
+
+QLineEdit:disabled, QTextEdit:disabled, QPlainTextEdit:disabled {
+    background-color: @card_secondary@;
+    color: @text_placeholder@;
+}
+
+/* CheckBox & RadioButton */
+QCheckBox, QRadioButton {
+    spacing: 8px;
+    color: @text_primary@;
+}
+
+QCheckBox:disabled, QRadioButton:disabled {
+    color: @text_placeholder@;
+}
+
+/* TableView & ListView */
+QTableView, QListView {
+    background-color: @entry_bg@;
+    color: @text_primary@;
+    border: 1px solid @border@;
+    border-radius: 4px;
+    gridline-color: @border_subtle@;
+    selection-background-color: @table_selected_bg@;
+    selection-color: @text_primary@;
+}
+
+QHeaderView::section {
+    background-color: @table_header_bg@;
+    color: @text_secondary@;
+    border: none;
+    border-bottom: 1px solid @border@;
+    padding: 6px 8px;
+    font-weight: 600;
+}
+
+/* Progress Bar */
+QProgressBar {
+    background-color: @border_subtle@;
+    border: none;
+    border-radius: 3px;
+    text-align: center;
+    height: 6px;
+}
+
+QProgressBar::chunk {
+    background-color: @accent@;
+    border-radius: 3px;
+}
+
+/* Status Bar */
+QStatusBar, QFrame#FluentStatusBar {
+    background-color: @card_bg@;
+    border-top: 1px solid @border_subtle@;
+    color: @text_secondary@;
+    padding: 4px 12px;
+}

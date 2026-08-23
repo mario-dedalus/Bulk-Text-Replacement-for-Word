@@ -1,0 +1,194 @@
+/* macOS Native Style Stylesheet */
+
+QMainWindow {
+    background-color: @window_bg@;
+}
+
+QWidget {
+    color: @text_primary@;
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+    font-size: 13px;
+}
+
+QScrollArea,
+QScrollArea > QWidget,
+QScrollArea::viewport,
+QWidget[isPageContent="true"] {
+    background-color: @window_bg@;
+    border: none;
+}
+
+/* Card Surface */
+QFrame[isCard="true"] {
+    background-color: @card_bg@;
+    border: 1px solid @border_subtle@;
+    border-radius: 8px;
+}
+
+QLabel#CardTitle {
+    font-size: 14px;
+    font-weight: 600;
+    color: @text_primary@;
+}
+
+QLabel#CardSubtitle {
+    font-size: 12px;
+    color: @text_secondary@;
+}
+
+QLabel#AppTitle {
+    font-size: 16px;
+    font-weight: 700;
+    color: @text_primary@;
+}
+
+/* Primary Accent Button */
+QPushButton[isPrimary="true"] {
+    background-color: @accent@;
+    color: @accent_text@;
+    border: 1px solid @accent@;
+    border-radius: 5px;
+    padding: 6px 16px;
+    font-weight: 600;
+    min-height: 22px;
+}
+
+QPushButton[isPrimary="true"]:hover {
+    background-color: @accent_hover@;
+}
+
+QPushButton[isPrimary="true"]:pressed {
+    background-color: @accent_pressed@;
+}
+
+QPushButton[isPrimary="true"]:disabled {
+    background-color: @border_subtle@;
+    color: @text_placeholder@;
+    border-color: @border_subtle@;
+}
+
+QPushButton[isPrimary="true"]:focus {
+    outline: 2px solid @accent@;
+}
+
+/* Secondary Button */
+QPushButton {
+    background-color: @button_bg@;
+    color: @text_primary@;
+    border: 1px solid @button_border@;
+    border-radius: 5px;
+    padding: 5px 12px;
+    min-height: 20px;
+}
+
+QPushButton:hover {
+    background-color: @button_hover@;
+}
+
+QPushButton:pressed {
+    background-color: @button_pressed@;
+}
+
+QPushButton:disabled {
+    background-color: transparent;
+    color: @text_placeholder@;
+    border-color: @border_subtle@;
+}
+
+QPushButton:focus {
+    border: 2px solid @accent@;
+}
+
+/* Ghost / Tool Button */
+QPushButton[isGhost="true"] {
+    background-color: transparent;
+    color: @text_secondary@;
+    border: none;
+    border-radius: 4px;
+    padding: 4px 8px;
+}
+
+QPushButton[isGhost="true"]:hover {
+    background-color: @button_hover@;
+    color: @text_primary@;
+}
+
+QPushButton[isGhost="true"]:disabled {
+    color: @text_placeholder@;
+}
+
+/* Input Fields */
+QLineEdit, QTextEdit, QPlainTextEdit {
+    background-color: @entry_bg@;
+    color: @text_primary@;
+    border: 1px solid @entry_border@;
+    border-radius: 5px;
+    padding: 5px 8px;
+}
+
+QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {
+    border: 2px solid @accent@;
+}
+
+QLineEdit:disabled, QTextEdit:disabled, QPlainTextEdit:disabled {
+    background-color: @card_secondary@;
+    color: @text_placeholder@;
+    border-color: @border_subtle@;
+}
+
+/* CheckBox & RadioButton */
+QCheckBox, QRadioButton {
+    spacing: 8px;
+    color: @text_primary@;
+}
+
+QCheckBox:disabled, QRadioButton:disabled {
+    color: @text_placeholder@;
+}
+
+/* TableView & ListView */
+QTableView, QListView {
+    background-color: @entry_bg@;
+    color: @text_primary@;
+    border: 1px solid @border@;
+    border-radius: 5px;
+    selection-background-color: @table_selected_bg@;
+    selection-color: @text_primary@;
+}
+
+QTableView:disabled, QListView:disabled {
+    background-color: @card_secondary@;
+    color: @text_placeholder@;
+    border-color: @border_subtle@;
+}
+
+QHeaderView::section {
+    background-color: @table_header_bg@;
+    color: @text_secondary@;
+    border: none;
+    border-bottom: 1px solid @border@;
+    padding: 5px 8px;
+    font-weight: 600;
+}
+
+/* Progress Bar */
+QProgressBar {
+    background-color: @border_subtle@;
+    border: none;
+    border-radius: 3px;
+    text-align: center;
+    height: 6px;
+}
+
+QProgressBar::chunk {
+    background-color: @accent@;
+    border-radius: 3px;
+}
+
+/* Status Bar */
+QStatusBar, QFrame#FluentStatusBar {
+    background-color: @card_bg@;
+    border-top: 1px solid @border_subtle@;
+    color: @text_secondary@;
+    padding: 4px 12px;
+}
