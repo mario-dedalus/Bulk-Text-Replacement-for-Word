@@ -80,7 +80,7 @@ Sometimes you just want to replace a text snippet which is not present in any "s
 
 ### 📸 Screenshot
 
-<img width="526" height="556" alt="grafik" src="https://github.com/user-attachments/assets/272e3821-4496-4f14-bf70-f185774e284b" />
+<img width="702" height="812" alt="grafik" src="https://github.com/user-attachments/assets/87b0450c-5b96-4d10-b381-42a938f4aeb6" />
 
 ### ▶️ YouTube
 
