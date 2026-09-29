@@ -1,21 +1,6 @@
 # Bulk Text Replacement for Word
 🎯 Easy-to-use tool for text replacements across multiple Word documents at the same time. Handles hyperlinks, text boxes, headers, footers safely. Previews changes with diff context and processes multiple files at once. Real-time match counter shows results as you type. Perfect for bulk document updates. Download exe, no installation needed! Made for efficiency.⚡
 
-## 🆕 What's new
-- 📂 **Add folder (recursive)**: add every Word document in a folder and all its sub-folders in one go; files are labeled with their relative path so identical file names in different language folders stay distinguishable.
-- 🕒 **Untouched files stay untouched**: documents without a single match are no longer re-saved, so their modification date is preserved.
-- 💾 **Smarter backups**: a `.backup` is only created for files that were actually modified, and an existing backup is never overwritten by a later run.
-- ↩️ **Restore backups**: roll the selected files back to their backup with one click, optionally cleaning up the `.backup` files afterwards.
-- 🔎 **Show only affected files**: hide documents with no matches in any results window (errored files are never hidden).
-- 💾 **Export results**: save any preview, replacement, or hyperlink check as a `.txt` file, exactly as shown, filter included.
-- 🪟 **Resizable, maximizable results windows**: useful when a run spans dozens of files.
-- 📊 **"Files modified (saved)" counter**: see at a glance how many documents were really written.
-- 📄 **`.docm` context-menu support**: the context menu registry file now also registers `.docm`, not just `.docx`/`.doc`.
-
-### 🐛 Bug fixes
-- **Runaway replacements**: replacing a term with a longer version of itself (e.g. "Radiotherapy" → "Radiotherapy Plus") made Advanced Replace loop forever, filling the document with repeated text and freezing Word. Fixed.
-- **Hijacked Word sessions**: Advanced Replace now runs in its own Word process instead of attaching to one you already had open, so your existing Word window is never hidden or closed.
-
 ## 🚀 Quick start
 
 ### Option 1: Download executable
@@ -119,7 +104,7 @@ If you don't want to hear me talking for too long, just jump to [3:30](https://y
 ## Project structure
 ```
 WordTextReplacer/
-├── _legacy/                   # legacy version (v1)
+├── _legacy/                   # legacy version (v1.1)
 ├── c_m_e/                     # .reg file
 ├── doc/                       # User Manual
 ├── exe/                       # .exe file
