@@ -4,6 +4,7 @@ import tkinter as tk
 from tkinter import messagebox, scrolledtext, filedialog
 from docx import Document
 import re
+import shutil
 try:
     import win32com.client
     HAS_WIN32COM = True
@@ -14,13 +15,32 @@ except ImportError:
 # (soft hyphens, zero-width spaces, etc. that Word inserts for formatting)
 _INVISIBLE_CHARS_TABLE = str.maketrans('', '', '\u00AD\u200B\u200C\u200D\u2060\uFEFF')
 
+WORD_EXTENSIONS = ('.docx', '.doc', '.docm')
+
+
+def _new_word_app():
+    """Start our OWN Word process. Plain Dispatch would attach to the user's running
+    Word (ROT lookup) and then hide/Quit their session."""
+    try:
+        return win32com.client.DispatchEx("Word.Application")
+    except Exception:
+        return win32com.client.Dispatch("Word.Application")
+
 class WordTextReplacerSingle:
-    def __init__(self, initial_file=None):
+    def __init__(self, initial_files=None):
         self.file_paths = []
         self._text_cache = {}
+        self._display_names = {}  # normalized path -> label shown in the listbox
         self._live_count_after_id = None
-        if initial_file and os.path.exists(initial_file):
-            self.file_paths.append(initial_file)
+        
+        if isinstance(initial_files, str):  # a single path still works
+            initial_files = [initial_files]
+        seen = set()
+        for path in initial_files or []:
+            key = os.path.normpath(os.path.abspath(path))
+            if key not in seen and os.path.exists(path):
+                seen.add(key)
+                self.file_paths.append(path)
         
         self.root = tk.Tk()
         self.setup_gui()
@@ -84,6 +104,11 @@ class WordTextReplacerSingle:
                                  command=self.add_files,
                                  bg="#2196f3", fg="white", font=("Arial", 9))
         add_files_btn.pack(side=tk.LEFT, padx=(0, 5))
+        
+        add_folder_btn = tk.Button(file_buttons_frame, text="Add folder", 
+                                  command=self.add_folder,
+                                  bg="#0288d1", fg="white", font=("Arial", 9))
+        add_folder_btn.pack(side=tk.LEFT, padx=(0, 5))
         
         remove_file_btn = tk.Button(file_buttons_frame, text="Remove selected", 
                                    command=self.remove_selected_file,
@@ -206,6 +231,12 @@ class WordTextReplacerSingle:
                                         command=self.advanced_replace_with_vba,
                                         bg="#ff9800", fg="white", font=("Arial", 10, "bold"))
         advanced_replace_btn.pack(side=tk.LEFT, padx=(0, 10))
+        
+        # Restore from backup button
+        restore_btn = tk.Button(button_frame, text="↩ Restore backups", 
+                               command=self.restore_from_backup,
+                               bg="#795548", fg="white", font=("Arial", 10))
+        restore_btn.pack(side=tk.LEFT, padx=(0, 10))
                 
         # Cancel button
         cancel_btn = tk.Button(button_frame, text="Close", 
@@ -295,10 +326,23 @@ class WordTextReplacerSingle:
             self.root.after_cancel(self._live_count_after_id)
         self._live_count_after_id = self.root.after(400, self._do_live_count)
 
-    def _refresh_text_cache(self):
-        """Re-read document text for all current files"""
-        self._text_cache.clear()
-        for fp in self.file_paths:
+    def _refresh_text_cache(self, force=False):
+        """Cache document text. Only unread files are opened unless force=True,
+        so adding a large folder does not re-read everything."""
+        if force:
+            self._text_cache.clear()
+        else:
+            current = set(self.file_paths)
+            for stale in [p for p in self._text_cache if p not in current]:
+                del self._text_cache[stale]
+        
+        pending = [fp for fp in self.file_paths if fp not in self._text_cache]
+        show_progress = len(pending) > 20
+        for i, fp in enumerate(pending, 1):
+            if show_progress and (i == 1 or i % 10 == 0):
+                self.status_label.config(text=f"Reading documents {i}/{len(pending)}...",
+                                         fg="orange")
+                self.root.update()
             try:
                 doc = Document(fp)
                 self._text_cache[fp] = self.get_document_text(doc)
@@ -436,54 +480,66 @@ class WordTextReplacerSingle:
 
     def show_hyperlink_results(self, results, total_hyperlinks, files_with_hyperlinks):
         """Show hyperlink check results in scrollable window"""
-        message = "-" * 26 + "\n"
-        message += f"🔗 Hyperlink check results\n"
-        message += "-" * 26 + "\n\n"
-        message += f"📊 Summary:\n"
-        message += f"Files analyzed: {len(results)}\n"
-        message += f"Total hyperlinks found: {total_hyperlinks}\n"
-        message += f"Files with hyperlinks: {files_with_hyperlinks}\n\n"
-        message += "=" * 77 + "\n\n"
-        
-        if total_hyperlinks > 0:
-            message += "⚠️  Reminder for hyperlinks:\n"
-            message += "• Standard Replace updates display text but removes the actual link!\n"
-            message += "• Advanced Replace preserves hyperlinks when editing their display text.\n"
-            message += "• If you are not going to replace the display text of a hyperlink, you can still use Standard Replace as it is faster.\n\n"
+        def build(only_affected=False):
+            shown = [(i, r) for i, r in enumerate(results, 1)
+                     if not only_affected or self._result_is_affected(r, 'hyperlink_count')]
+            
+            message = "-" * 26 + "\n"
+            message += f"🔗 Hyperlink check results\n"
+            message += "-" * 26 + "\n\n"
+            message += f"📊 Summary:\n"
+            message += f"Files analyzed: {len(results)}\n"
+            message += f"Total hyperlinks found: {total_hyperlinks}\n"
+            message += f"Files with hyperlinks: {files_with_hyperlinks}\n"
+            if only_affected:
+                message += f"Filter: showing {len(shown)} affected file(s) of {len(results)}\n"
+            message += "\n"
             message += "=" * 77 + "\n\n"
-        
-        # Show detailed file results
-        for i, result in enumerate(results, 1):
-            message += f"📁 File {i}: {result['filename']}\n"
             
-            if 'error' in result:
-                message += f"   ❌ Error: {result['error']}\n"
-            elif result['hyperlink_count'] > 0:
-                message += f"   🔗 Hyperlinks found: {result['hyperlink_count']}\n"
+            if total_hyperlinks > 0:
+                message += "⚠️  Reminder for hyperlinks:\n"
+                message += "• Standard Replace updates display text but removes the actual link!\n"
+                message += "• Advanced Replace preserves hyperlinks when editing their display text.\n"
+                message += "• If you are not going to replace the display text of a hyperlink, you can still use Standard Replace as it is faster.\n\n"
+                message += "=" * 77 + "\n\n"
+            
+            if only_affected and not shown:
+                message += "No affected files.\n\n" + "=" * 77 + "\n\n"
+            
+            # Show detailed file results
+            for i, result in shown:
+                message += f"📁 File {i}: {result['filename']}\n"
                 
-                # Show sample hyperlinks
-                if result['hyperlinks']:
-                    message += f"   📋 Sample hyperlinks:\n"
-                    for idx, hyperlink in enumerate(result['hyperlinks'][:5], 1):  # Show max 5
-                        text_preview = hyperlink['text'][:30] + "..." if len(hyperlink['text']) > 30 else hyperlink['text']
-                        url_preview = hyperlink['url'][:40] + "..." if len(hyperlink['url']) > 40 else hyperlink['url']
-                        message += f"      {idx}. Text: '{text_preview}'\n"
-                        message += f"         URL: {url_preview}\n"
-                        message += f"         Location: {hyperlink['location']}\n"
+                if 'error' in result:
+                    message += f"   ❌ Error: {result['error']}\n"
+                elif result['hyperlink_count'] > 0:
+                    message += f"   🔗 Hyperlinks found: {result['hyperlink_count']}\n"
                     
-                    if result['total_found'] > 5:
-                        message += f"      ... and {result['total_found'] - 5} more hyperlinks\n"
-            else:
-                message += f"   ✅ No hyperlinks found\n"
+                    # Show sample hyperlinks
+                    if result['hyperlinks']:
+                        message += f"   📋 Sample hyperlinks:\n"
+                        for idx, hyperlink in enumerate(result['hyperlinks'][:5], 1):  # Show max 5
+                            text_preview = hyperlink['text'][:30] + "..." if len(hyperlink['text']) > 30 else hyperlink['text']
+                            url_preview = hyperlink['url'][:40] + "..." if len(hyperlink['url']) > 40 else hyperlink['url']
+                            message += f"      {idx}. Text: '{text_preview}'\n"
+                            message += f"         URL: {url_preview}\n"
+                            message += f"         Location: {hyperlink['location']}\n"
+                        
+                        if result['total_found'] > 5:
+                            message += f"      ... and {result['total_found'] - 5} more hyperlinks\n"
+                else:
+                    message += f"   ✅ No hyperlinks found\n"
+                
+                message += "\n" + "=" * 77 + "\n\n"
             
-            message += "\n" + "=" * 77 + "\n\n"
-        
-        if total_hyperlinks < 1:
-            message += "💡 Both Standard and Advanced Replace are safe to use."
-        else:
-            message += "💡 Only use Standard Replace if you are not going to change display texts of hyperlinks."
+            if total_hyperlinks < 1:
+                message += "💡 Both Standard and Advanced Replace are safe to use."
+            else:
+                message += "💡 Only use Standard Replace if you are not going to change display texts of hyperlinks."
+            
+            return message
 
-        self.show_scrollable_results(message, "Hyperlink check results")
+        self.show_scrollable_results(build(False), "Hyperlink check results", builder=build)
 
     def handle_delete_key(self, event):
         """Handle Delete key press in file listbox"""
@@ -595,6 +651,17 @@ class WordTextReplacerSingle:
 
     Hyperlinks:
     • 🔗 Hyperlink check - Checks the selected files for hyperlinks
+
+    Results windows:
+    • Can be maximized and resized
+    • 'Show only affected files' hides files with no matches (errors are never hidden)
+    • 💾 Export results - Saves the results as .txt, exactly as currently shown
+
+    Backups:
+    • Files without any match are never written - their modification date stays intact
+    • Backups are only created for files that were actually changed
+    • An existing .backup is never overwritten by a later run
+    • ↩ Restore backups - Restores every selected file that has a .backup next to it
 
     Regex:
     • Supported in Standard Replace/Preview only (Python regex syntax)
@@ -891,7 +958,9 @@ class WordTextReplacerSingle:
         self.file_listbox.delete(0, tk.END)
         
         for file_path in self.file_paths:
-            self.file_listbox.insert(tk.END, os.path.basename(file_path))
+            key = os.path.normpath(os.path.abspath(file_path))
+            self.file_listbox.insert(
+                tk.END, self._display_names.get(key, os.path.basename(file_path)))
         
         # Update file count label
         file_count = len(self.file_paths)
@@ -946,6 +1015,61 @@ class WordTextReplacerSingle:
             else:
                 self.status_label.config(text="No new files added.", fg="orange")
     
+    def add_folder(self):
+        """Add all Word documents found recursively under a chosen folder"""
+        initial_dir = os.path.dirname(self.file_paths[0]) if self.file_paths else None
+        root_dir = filedialog.askdirectory(
+            title="Select root folder (searched recursively for Word documents)",
+            initialdir=initial_dir
+        )
+        
+        if not root_dir:
+            return
+        
+        found = []
+        for dirpath, _dirnames, filenames in os.walk(root_dir):
+            for name in filenames:
+                if name.startswith('~$'):
+                    continue  # Word lock/temp files
+                if name.lower().endswith(WORD_EXTENSIONS):
+                    found.append(os.path.join(dirpath, name))
+        found.sort()
+        
+        if not found:
+            messagebox.showinfo("No documents found",
+                                f"No Word documents were found in:\n{root_dir}")
+            return
+        
+        existing = {os.path.normpath(os.path.abspath(p)) for p in self.file_paths}
+        new_files = [p for p in found
+                     if os.path.normpath(os.path.abspath(p)) not in existing]
+        
+        if not new_files:
+            self.status_label.config(
+                text=f"All {len(found)} document(s) from that folder are already in the list.",
+                fg="orange")
+            return
+        
+        duplicate_count = len(found) - len(new_files)
+        duplicate_info = f"\n({duplicate_count} already in the list)" if duplicate_count else ""
+        if not messagebox.askyesno(
+                "Confirm",
+                f"Found {len(found)} Word document(s) in:\n{root_dir}\n\n"
+                f"{len(new_files)} file(s) will be added.{duplicate_info}\n\nContinue?"):
+            return
+        
+        for file_path in new_files:
+            self.file_paths.append(file_path)
+            key = os.path.normpath(os.path.abspath(file_path))
+            self._display_names[key] = os.path.relpath(file_path, root_dir)
+        
+        self._refresh_text_cache()
+        self.update_file_list()
+        self._schedule_live_count()
+        self.status_label.config(
+            text=f"Added {len(new_files)} file{'s' if len(new_files) != 1 else ''} from {root_dir}",
+            fg="blue")
+    
     def remove_selected_file(self):
         """Remove the selected file(s) from the list"""
         selections = self.file_listbox.curselection()
@@ -978,6 +1102,7 @@ class WordTextReplacerSingle:
                 file_count = len(self.file_paths)
                 self.file_paths.clear()
                 self._text_cache.clear()
+                self._display_names.clear()
                 self.update_file_list()
                 self.match_counter_label.config(text="")
                 self.status_label.config(text=f"Cleared {file_count} file{'s' if file_count != 1 else ''}", fg="orange")
@@ -1166,50 +1291,61 @@ class WordTextReplacerSingle:
         """Show standard preview results (main content only)"""
         case_info = " (case sensitive)" if case_sensitive else " (case insensitive)"
         
-        message = "-" * 46 + "\n"
-        message += f"📄 Standard Preview results{case_info}\n"
-        message += "-" * 46 + "\n\n"
-        message += f"⚡ Fast Analysis: {total_matches} match(es) found in main content\n\n"
-        message += f"📊 Summary:\n"
-        message += f"Files analyzed: {len(results)}\n"
-        message += f"Main content matches: {total_matches} (in {files_with_matches} files)\n"
-        message += f"Search text: '{search_text[:40]}{'...' if len(search_text) > 40 else ''}'\n"
-        message += f"Replace text: '{replace_text[:40]}{'...' if len(replace_text) > 40 else ''}'\n"
-        message += f"Coverage: Main text and tables only\n"
-        message += "=" * 77 + "\n\n"
-        
-        # Show detailed file results
-        for i, result in enumerate(results, 1):
-            message += f"📁 FILE {i}: {result['filename']}\n"
+        def build(only_affected=False):
+            shown = [(i, r) for i, r in enumerate(results, 1)
+                     if not only_affected or self._result_is_affected(r, 'main_total')]
             
-            if result['main_total'] > 0:
-                message += f"   ✅ Matches found: {result['main_total']}\n"
+            message = "-" * 46 + "\n"
+            message += f"📄 Standard Preview results{case_info}\n"
+            message += "-" * 46 + "\n\n"
+            message += f"⚡ Fast Analysis: {total_matches} match(es) found in main content\n\n"
+            message += f"📊 Summary:\n"
+            message += f"Files analyzed: {len(results)}\n"
+            message += f"Main content matches: {total_matches} (in {files_with_matches} files)\n"
+            message += f"Search text: '{search_text[:40]}{'...' if len(search_text) > 40 else ''}'\n"
+            message += f"Replace text: '{replace_text[:40]}{'...' if len(replace_text) > 40 else ''}'\n"
+            message += f"Coverage: Main text and tables only\n"
+            if only_affected:
+                message += f"Filter: showing {len(shown)} affected file(s) of {len(results)}\n"
+            message += "=" * 77 + "\n\n"
+            
+            if only_affected and not shown:
+                message += "No affected files.\n\n" + "=" * 77 + "\n\n"
+            
+            # Show detailed file results
+            for i, result in shown:
+                message += f"📁 FILE {i}: {result['filename']}\n"
+                
+                if result['main_total'] > 0:
+                    message += f"   ✅ Matches found: {result['main_total']}\n"
+                else:
+                    message += f"   ✅ No matches found\n"
+                
+                for detail in result['details']:
+                    message += f"   {detail}\n"
+                
+                # Diff preview: show context snippets
+                contexts = result.get('contexts', [])
+                if contexts:
+                    message += f"\n   📝 Preview (first {len(contexts)} match{'es' if len(contexts) != 1 else ''}):\n"
+                    for j, ctx in enumerate(contexts, 1):
+                        message += f"      {j}. {ctx}\n"
+                    if result['main_total'] > len(contexts):
+                        message += f"      ... and {result['main_total'] - len(contexts)} more\n"
+                
+                message += "\n" + "=" * 77 + "\n\n"
+            
+            # Recommendations
+            if total_matches > 0:
+                message += "💡 Replacement recommendations:\n"
+                message += "Use 'Standard Replace' for fast replacement of main content\n"
+                message += "Use 'Advanced Replace' if you also need shapes/headers/footers\n"
             else:
-                message += f"   ✅ No matches found\n"
+                message += "💡 Tip: No matches found in main content. Try 'Advanced Preview' to run a comprehensive check."
             
-            for detail in result['details']:
-                message += f"   {detail}\n"
-            
-            # Diff preview: show context snippets
-            contexts = result.get('contexts', [])
-            if contexts:
-                message += f"\n   📝 Preview (first {len(contexts)} match{'es' if len(contexts) != 1 else ''}):\n"
-                for j, ctx in enumerate(contexts, 1):
-                    message += f"      {j}. {ctx}\n"
-                if result['main_total'] > len(contexts):
-                    message += f"      ... and {result['main_total'] - len(contexts)} more\n"
-            
-            message += "\n" + "=" * 77 + "\n\n"
+            return message
         
-        # Recommendations
-        if total_matches > 0:
-            message += "💡 Replacement recommendations:\n"
-            message += "Use 'Standard Replace' for fast replacement of main content\n"
-            message += "Use 'Advanced Replace' if you also need shapes/headers/footers\n"
-        else:
-            message += "💡 Tip: No matches found in main content. Try 'Advanced Preview' to run a comprehensive check."
-        
-        self.show_scrollable_results(message, "Standard Preview results")
+        self.show_scrollable_results(build(False), "Standard Preview results", builder=build)
 
     def preview_comprehensive(self):
         """Comprehensive preview - All areas using Word COM automation"""
@@ -1242,7 +1378,7 @@ class WordTextReplacerSingle:
             self.root.update()
             
             # Open Word once for all files
-            word_app = win32com.client.Dispatch("Word.Application")
+            word_app = _new_word_app()
             word_app.Visible = False
             word_app.DisplayAlerts = False
             word_app.ScreenUpdating = False
@@ -1376,11 +1512,17 @@ class WordTextReplacerSingle:
 
     def _find_replace_count(self, rng, search_text, replace_text, case_sensitive, whole_word=False):
         """Iterative Find.Execute (Option A) — replaces one match at a time, returns exact count."""
+        try:
+            work = rng.Duplicate  # caller's range must stay intact (e.g. the NextStoryRange walk)
+        except Exception:
+            work = rng
         count = 0
-        rng.Find.ClearFormatting()
-        rng.Find.Replacement.ClearFormatting()
+        end = work.End
+        delta = len(replace_text) - len(search_text)
+        work.Find.ClearFormatting()
+        work.Find.Replacement.ClearFormatting()
         while True:
-            found = rng.Find.Execute(
+            found = work.Find.Execute(
                 FindText=search_text, ReplaceWith=replace_text,
                 Replace=1, Forward=True, Wrap=0,
                 MatchCase=case_sensitive, MatchWholeWord=whole_word,
@@ -1390,6 +1532,16 @@ class WordTextReplacerSingle:
             if not found:
                 break
             count += 1
+            # Word redefines the range to the text it just wrote. Resume AFTER it, otherwise a
+            # replacement containing the search term ("X" -> "X Plus") matches itself forever.
+            end += delta
+            next_start = work.End
+            if next_start >= end:
+                break
+            try:
+                work.SetRange(next_start, end)
+            except Exception:
+                break
         return count
 
     def preview_advanced_areas(self, file_path, search_text, case_sensitive=False, word_app=None):
@@ -1404,7 +1556,7 @@ class WordTextReplacerSingle:
         doc = None
         try:
             if word_app is None:
-                word_app = win32com.client.Dispatch("Word.Application")
+                word_app = _new_word_app()
                 word_app.Visible = False
                 word_app.DisplayAlerts = False
                 word_app.ScreenUpdating = False
@@ -1554,42 +1706,50 @@ class WordTextReplacerSingle:
         """Show comprehensive preview results"""
         case_info = " (case sensitive)" if case_sensitive else " (case insensitive)"
 
-        message = "-" * 46 + "\n"    
-        message += f"🔍 Advanced Preview results{case_info}\n"
-        message += "-" * 46 + "\n\n" 
-        message += f"🎯 Complete Analysis: {total_matches} total match(es) found\n\n"
-        message += f"📊 Summary:\n"
-        message += f"Files analyzed: {len(results)}\n"
-        message += f"Total matches: {total_matches} (in {files_with_matches} files)\n"
-
-        
-        message += f"Search text: '{search_text[:40]}{'...' if len(search_text) > 40 else ''}'\n"
-        message += f"Replace text: '{replace_text[:40]}{'...' if len(replace_text) > 40 else ''}'\n"
-        message += "=" * 77 + "\n\n"
-        
-        # Show detailed file results
-        for i, result in enumerate(results, 1):
-            message += f"📁 FILE {i}: {result['filename']}\n"
+        def build(only_affected=False):
+            shown = [(i, r) for i, r in enumerate(results, 1)
+                     if not only_affected or self._result_is_affected(r, 'total')]
             
-            if result['total'] > 0:
-                message += f"   ✅ Total matches: {result['total']}\n"
+            message = "-" * 46 + "\n"    
+            message += f"🔍 Advanced Preview results{case_info}\n"
+            message += "-" * 46 + "\n\n" 
+            message += f"🎯 Complete Analysis: {total_matches} total match(es) found\n\n"
+            message += f"📊 Summary:\n"
+            message += f"Files analyzed: {len(results)}\n"
+            message += f"Total matches: {total_matches} (in {files_with_matches} files)\n"
+            message += f"Search text: '{search_text[:40]}{'...' if len(search_text) > 40 else ''}'\n"
+            message += f"Replace text: '{replace_text[:40]}{'...' if len(replace_text) > 40 else ''}'\n"
+            if only_affected:
+                message += f"Filter: showing {len(shown)} affected file(s) of {len(results)}\n"
+            message += "=" * 77 + "\n\n"
+            
+            if only_affected and not shown:
+                message += "No affected files.\n\n" + "=" * 77 + "\n\n"
+            
+            # Show detailed file results
+            for i, result in shown:
+                message += f"📁 FILE {i}: {result['filename']}\n"
+                
+                if result['total'] > 0:
+                    message += f"   ✅ Total matches: {result['total']}\n"
+                else:
+                    message += f"   ✅ No matches found\n"
+                
+                for detail in result['details']:
+                    message += f"   {detail}\n"
+                message += "\n" + "=" * 77 + "\n\n"
+            
+            # Recommendations
+            if total_matches > 0:
+                message += "💡 Replacement recommendations:\n"
+                message += "Use 'Advanced Replace' for complete coverage with hyperlink preservation\n"
+                message += "Or use 'Standard Replace' for faster processing (main content only)\n"
             else:
-                message += f"   ✅ No matches found\n"
-
+                message += "💡 Tip: No matches found. Try different search terms or check spelling."
             
-            for detail in result['details']:
-                message += f"   {detail}\n"
-            message += "\n" + "=" * 77 + "\n\n"
+            return message
         
-        # Recommendations
-        if total_matches > 0:
-            message += "💡 Replacement recommendations:\n"
-            message += "Use 'Advanced Replace' for complete coverage with hyperlink preservation\n"
-            message += "Or use 'Standard Replace' for faster processing (main content only)\n"
-        else:
-            message += "💡 Tip: No matches found. Try different search terms or check spelling."
-        
-        self.show_scrollable_results(message, "Advanced Preview results")
+        self.show_scrollable_results(build(False), "Advanced Preview results", builder=build)
 
     def replace_in_paragraph_advanced(self, paragraph, search_text, replace_text, case_sensitive=False, use_regex=False, whole_word=False):
         """Replace text in a paragraph that may span multiple runs"""
@@ -1690,6 +1850,104 @@ class WordTextReplacerSingle:
                     count += self._replace_in_table(nested_table, search_text, replace_text, case_sensitive, use_regex, whole_word)
         return count
 
+    @staticmethod
+    def _make_backup(file_path):
+        """Back up the still-pristine file. Never overwrites an existing backup,
+        so a second run cannot destroy the original rollback point."""
+        backup_path = file_path + ".backup"
+        if os.path.exists(backup_path):
+            return None
+        shutil.copy2(file_path, backup_path)
+        return backup_path
+
+    def restore_from_backup(self):
+        """Copy each <file>.backup back over its original document"""
+        if not self.file_paths:
+            messagebox.showwarning("Warning", "Please add at least one Word document.")
+            return
+        
+        pairs = [(p, p + ".backup") for p in self.file_paths
+                 if os.path.exists(p + ".backup")]
+        
+        if not pairs:
+            messagebox.showinfo("Restore from backup",
+                                "No .backup files were found for the selected documents.")
+            return
+        
+        if not messagebox.askyesno(
+                "Confirm restore",
+                f"{len(pairs)} of {len(self.file_paths)} selected file(s) have a backup.\n\n"
+                "Their current contents will be OVERWRITTEN with the backup version.\n\n"
+                "Continue?"):
+            return
+        
+        delete_after = messagebox.askyesno(
+            "Delete backups?",
+            "Delete the .backup files after a successful restore?")
+        
+        self.status_label.config(text="Restoring from backup...", fg="orange")
+        self.progress_frame.pack(fill=tk.X, pady=(10, 0))
+        self.root.update()
+        
+        restored = 0
+        deleted = 0
+        errors = []
+        restored_names = []
+        
+        for i, (original, backup) in enumerate(pairs):
+            progress_percent = int((i / len(pairs)) * 100)
+            self.progress_label.config(
+                text=f"Restoring {i+1}/{len(pairs)}: {os.path.basename(original)}")
+            self.progress_percent_label.config(text=f"Progress: {progress_percent}%")
+            self.root.update()
+            
+            try:
+                shutil.copy2(backup, original)
+                restored += 1
+                restored_names.append(os.path.basename(original))
+                if delete_after:
+                    os.remove(backup)
+                    deleted += 1
+            except Exception as e:
+                errors.append(f"{os.path.basename(original)}: {str(e)}")
+        
+        self.progress_percent_label.config(text="Progress: 100%")
+        self.root.update()
+        self.progress_frame.pack_forget()
+        
+        self._refresh_text_cache(force=True)
+        self._schedule_live_count()
+        
+        self.status_label.config(
+            text=f"Restored {restored} file{'s' if restored != 1 else ''} from backup",
+            fg="green" if not errors else "orange")
+        
+        message = "-" * 46 + "\n"
+        message += "↩ Restore from backup results\n"
+        message += "-" * 46 + "\n\n"
+        message += "📊 Summary:\n"
+        message += f"Files selected: {len(self.file_paths)}\n"
+        message += f"Backups found: {len(pairs)}\n"
+        message += f"Files restored: {restored}\n"
+        message += f"Without backup (skipped): {len(self.file_paths) - len(pairs)}\n"
+        if delete_after:
+            message += f"Backup files deleted: {deleted}\n"
+        message += "\n" + "=" * 77 + "\n\n"
+        
+        for i, name in enumerate(restored_names, 1):
+            message += f"📁 FILE {i}: {name}\n"
+        message += "\n" + "=" * 77 + "\n\n"
+        
+        if errors:
+            message += "❌ Errors:\n"
+            for error in errors:
+                message += f"• {error}\n"
+            message += "\n"
+        
+        message += "💡 Tip: close the documents in Word before restoring, otherwise Word may write its old buffer back on save."
+        
+        self.show_scrollable_results(message, "Restore from backup results")
+
     def replace_text_in_documents(self, close_after=False):
         """Perform the actual text replacement across all files - Enhanced results"""
         if not self.file_paths:
@@ -1730,6 +1988,7 @@ class WordTextReplacerSingle:
             
             total_replacements = 0
             successful_files = 0
+            changed_files = 0
             backup_files = []
             all_results = []  # NEW: Store detailed results
             
@@ -1741,13 +2000,6 @@ class WordTextReplacerSingle:
                 self.root.update()
                 
                 try:
-                    # Create backup if requested
-                    if self.create_backup_var.get():
-                        backup_path = file_path + ".backup"
-                        import shutil
-                        shutil.copy2(file_path, backup_path)
-                        backup_files.append(backup_path)
-                    
                     # Process the document
                     doc = Document(file_path)
                     file_replacements = 0
@@ -1761,14 +2013,20 @@ class WordTextReplacerSingle:
                     for table in doc.tables:
                         file_replacements += self._replace_in_table(table, search_for, replace_with, case_sensitive, use_regex, whole_word)
                     
-                    # Save the document
-                    doc.save(file_path)
+                    # Nothing matched -> never write the file, so its timestamp stays intact
+                    if file_replacements > 0:
+                        if self.create_backup_var.get():
+                            backup_path = self._make_backup(file_path)
+                            if backup_path:
+                                backup_files.append(backup_path)
+                        doc.save(file_path)
+                        changed_files += 1
                     
                     # Store detailed results
                     all_results.append({
                         'filename': os.path.basename(file_path),
                         'total': file_replacements,
-                        'details': [f"  📄 Main content replacements: {file_replacements}"] if file_replacements > 0 else ["  ✅ No replacements needed"]
+                        'details': [f"  📄 Main content replacements: {file_replacements}"] if file_replacements > 0 else ["  ✅ No replacements needed (file left untouched)"]
                     })
                     
                     total_replacements += file_replacements
@@ -1789,12 +2047,12 @@ class WordTextReplacerSingle:
             self.status_label.config(text="Replacement completed!", fg="green")
             
             # Refresh text cache so live counter reflects the updated files
-            self._refresh_text_cache()
+            self._refresh_text_cache(force=True)
             self._schedule_live_count()
             
             # Show enhanced results instead of simple messagebox
             self.show_replace_all_results(all_results, search_for, replace_with, total_replacements, 
-                                         successful_files, backup_files, close_after)
+                                         successful_files, changed_files, backup_files, close_after)
             
             return True
             
@@ -1803,41 +2061,56 @@ class WordTextReplacerSingle:
             messagebox.showerror("Error", f"An error occurred: {str(e)}")
             return False
 
-    def show_replace_all_results(self, results, search_text, replace_text, total_replacements, successful_files, backup_files, close_after):
+    def show_replace_all_results(self, results, search_text, replace_text, total_replacements, successful_files, changed_files, backup_files, close_after):
         """Show Replace results in scrollable window"""
         case_sensitive = self.case_sensitive_var.get()
         case_info = " (case sensitive)" if case_sensitive else " (case insensitive)"
         
-        message = "-" * 46 + "\n"
-        message += f"✅ Standard Replace results{case_info}\n"
-        message += "-" * 46 + "\n\n" 
-        message += f"🎉 Completed: {total_replacements} replacement(s) in main document content\n\n"
-        message += f"📊 Summary:\n"
-        message += f"Files processed: {successful_files}/{len(self.file_paths)}\n"
-        message += f"Total replacements: {total_replacements}\n"
-        message += f"Search text: '{search_text[:40]}{'...' if len(search_text) > 40 else ''}'\n"
-        message += f"Replace text: '{replace_text[:40]}{'...' if len(replace_text) > 40 else ''}'\n"
-        message += f"Coverage: Main text and tables\n"
-        
-        if backup_files:
-            message += f"Backup files created: {len(backup_files)}\n"
-        
-        message += "=" * 77 + "\n\n"
-        
-        # Show detailed file results
-        for i, result in enumerate(results, 1):
-            message += f"📁 FILE {i}: {result['filename']}\n"
-            if result['total'] > 0:
-                message += f"   ✅ Replacements made: {result['total']}\n"
-            else:
-                message += f"   ✅ No replacements needed\n"
+        def build(only_affected=False):
+            shown = [(i, r) for i, r in enumerate(results, 1)
+                     if not only_affected or self._result_is_affected(r, 'total')]
             
-            for detail in result['details']:
-                message += f"   {detail}\n"
-            message += "\n" + "=" * 77 + "\n\n"
+            message = "-" * 46 + "\n"
+            message += f"✅ Standard Replace results{case_info}\n"
+            message += "-" * 46 + "\n\n" 
+            message += f"🎉 Completed: {total_replacements} replacement(s) in main document content\n\n"
+            message += f"📊 Summary:\n"
+            message += f"Files processed: {successful_files}/{len(self.file_paths)}\n"
+            message += f"Files modified (saved): {changed_files}\n"
+            message += f"Total replacements: {total_replacements}\n"
+            message += f"Search text: '{search_text[:40]}{'...' if len(search_text) > 40 else ''}'\n"
+            message += f"Replace text: '{replace_text[:40]}{'...' if len(replace_text) > 40 else ''}'\n"
+            message += f"Coverage: Main text and tables\n"
+            
+            if backup_files:
+                message += f"Backup files created: {len(backup_files)}\n"
+            
+            if only_affected:
+                message += f"Filter: showing {len(shown)} affected file(s) of {len(results)}\n"
+            
+            message += "=" * 77 + "\n\n"
+            
+            if only_affected and not shown:
+                message += "No affected files.\n\n" + "=" * 77 + "\n\n"
+            
+            # Show detailed file results
+            for i, result in shown:
+                message += f"📁 FILE {i}: {result['filename']}\n"
+                if result['total'] > 0:
+                    message += f"   ✅ Replacements made: {result['total']}\n"
+                else:
+                    message += f"   ✅ No replacements needed\n"
+                
+                for detail in result['details']:
+                    message += f"   {detail}\n"
+                message += "\n" + "=" * 77 + "\n\n"
+            
+            if close_after:
+                message += "🚪 The application will close after you click OK.\n\n"
+            
+            return message
         
-        if close_after:
-            message += "🚪 The application will close after you click OK.\n\n"
+        message = build(False)
         
         # Show results and handle close_after
         if close_after:
@@ -1850,6 +2123,8 @@ class WordTextReplacerSingle:
             text_widget = scrolledtext.ScrolledText(result_window, wrap=tk.WORD, 
                                                    font=("Consolas", 9), padx=10, pady=10)
             text_widget.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+            self._add_affected_filter(result_window, text_widget, build).pack(
+                fill=tk.X, padx=10, pady=(10, 0), before=text_widget)
             text_widget.insert("1.0", message)
             text_widget.config(state=tk.DISABLED)
             
@@ -1857,16 +2132,23 @@ class WordTextReplacerSingle:
                 result_window.destroy()
                 self.root.destroy()
             
-            close_btn = tk.Button(result_window, text="Close application", 
+            btn_frame = tk.Frame(result_window)
+            btn_frame.pack(pady=(0, 10))
+            
+            tk.Button(btn_frame, text="💾 Export results",
+                     command=lambda: self._export_results_text(text_widget, "Standard Replace results"),
+                     bg="#0288d1", fg="white", font=("Arial", 10)).pack(side=tk.LEFT, padx=(0, 10))
+            
+            close_btn = tk.Button(btn_frame, text="Close application", 
                                  command=close_and_exit,
                                  bg="#333333", fg="white", font=("Arial", 10, "bold"))
-            close_btn.pack(pady=(0, 10))
+            close_btn.pack(side=tk.LEFT)
             
-            result_window.transient(self.root)
+            # No transient(): on Windows it strips the maximize/minimize buttons.
             result_window.grab_set()
         else:
             # Normal scrollable results
-            self.show_scrollable_results(message, "Standard Replace results")
+            self.show_scrollable_results(message, "Standard Replace results", builder=build)
 
     # Advanced Replace with Word COM Automation
     def advanced_replace_with_vba(self):
@@ -1917,10 +2199,12 @@ class WordTextReplacerSingle:
             all_results = []
             total_advanced_replacements = 0
             successful_files = 0
+            changed_files = 0
+            backup_files = []
             errors = []
             
             # Open Word once for all files
-            word_app = win32com.client.Dispatch("Word.Application")
+            word_app = _new_word_app()
             word_app.Visible = False
             word_app.DisplayAlerts = False
             word_app.ScreenUpdating = False
@@ -1934,12 +2218,6 @@ class WordTextReplacerSingle:
                 
                 doc = None
                 try:
-                    # Create backup if requested
-                    if self.create_backup_var.get():
-                        backup_path = file_path + ".backup"
-                        import shutil
-                        shutil.copy2(file_path, backup_path)
-                    
                     full_path = os.path.abspath(file_path)
                     doc = word_app.Documents.Open(full_path)
                     
@@ -2084,15 +2362,22 @@ class WordTextReplacerSingle:
                         details.append(f"  🔗 Hyperlinks: {hyperlink_count} replacement(s)")
                         file_replacements += hyperlink_count
                     
-                    # Save and close document
-                    doc.Save()
-                    doc.Close()
+                    # Save and close document.
+                    # The file on disk is still untouched until Save(), so back it up here.
+                    if file_replacements > 0:
+                        if self.create_backup_var.get():
+                            backup_path = self._make_backup(file_path)
+                            if backup_path:
+                                backup_files.append(backup_path)
+                        doc.Save()
+                        changed_files += 1
+                    doc.Close(0)  # wdDoNotSaveChanges - opening alone must not change the file
                     doc = None
                     
                     all_results.append({
                         'filename': os.path.basename(file_path),
                         'total': file_replacements,
-                        'details': details if details else ["  ✅ No advanced matches found"]
+                        'details': details if details else ["  ✅ No advanced matches found (file left untouched)"]
                     })
                     
                     total_advanced_replacements += file_replacements
@@ -2120,11 +2405,11 @@ class WordTextReplacerSingle:
             self.status_label.config(text="Advanced replacement completed!", fg="green")
             
             # Refresh text cache so live counter reflects the updated files
-            self._refresh_text_cache()
+            self._refresh_text_cache(force=True)
             self._schedule_live_count()
             
             # Show results in scrollable window
-            self.show_advanced_replace_results(all_results, search_for, replace_with, total_advanced_replacements, successful_files, errors)
+            self.show_advanced_replace_results(all_results, search_for, replace_with, total_advanced_replacements, successful_files, changed_files, backup_files, errors)
             
         except Exception as e:
             self.status_label.config(text="Error occurred", fg="red")
@@ -2137,44 +2422,103 @@ class WordTextReplacerSingle:
             except Exception:
                 pass
 
-    def show_advanced_replace_results(self, results, search_text, replace_text, total_replacements, successful_files, errors):
+    def show_advanced_replace_results(self, results, search_text, replace_text, total_replacements, successful_files, changed_files, backup_files, errors):
         """Show advanced replace results in scrollable window"""
         case_sensitive = self.case_sensitive_var.get()
         case_info = " (case sensitive)" if case_sensitive else " (case insensitive)"
         
-        message = "-" * 46 + "\n"
-        message += f"🔧 Advanced Replace results{case_info}\n"
-        message += "-" * 46 + "\n\n"
-        message += f"✅ Completed: {total_replacements} replacement(s) in ALL document areas\n\n"
-        message += f"📊 Summary:\n"
-        message += f"Files processed: {successful_files}/{len(self.file_paths)}\n"
-        message += f"Total advanced replacements: {total_replacements}\n"
-        message += f"Search text: '{search_text[:40]}{'...' if len(search_text) > 40 else ''}'\n"
-        message += f"Replace text: '{replace_text[:40]}{'...' if len(replace_text) > 40 else ''}'\n"
-        message += f"Coverage: Complete document (main content + all advanced areas)\n"
-        message += "=" * 77 + "\n\n"
-        
-        # Show detailed file results
-        for i, result in enumerate(results, 1):
-            message += f"📁 FILE {i}: {result['filename']}\n"
-            if result['total'] > 0:
-                message += f"   ✅ Advanced replacements: {result['total']}\n"
-            else:
-                message += f"   ✅ No advanced matches found\n"
+        def build(only_affected=False):
+            shown = [(i, r) for i, r in enumerate(results, 1)
+                     if not only_affected or self._result_is_affected(r, 'total')]
             
-            for detail in result['details']:
-                message += f"   {detail}\n"
-            message += "\n" + "=" * 77 + "\n\n"
+            message = "-" * 46 + "\n"
+            message += f"🔧 Advanced Replace results{case_info}\n"
+            message += "-" * 46 + "\n\n"
+            message += f"✅ Completed: {total_replacements} replacement(s) in ALL document areas\n\n"
+            message += f"📊 Summary:\n"
+            message += f"Files processed: {successful_files}/{len(self.file_paths)}\n"
+            message += f"Files modified (saved): {changed_files}\n"
+            message += f"Total advanced replacements: {total_replacements}\n"
+            message += f"Search text: '{search_text[:40]}{'...' if len(search_text) > 40 else ''}'\n"
+            message += f"Replace text: '{replace_text[:40]}{'...' if len(replace_text) > 40 else ''}'\n"
+            message += f"Coverage: Complete document (main content + all advanced areas)\n"
+            if backup_files:
+                message += f"Backup files created: {len(backup_files)}\n"
+            if only_affected:
+                message += f"Filter: showing {len(shown)} affected file(s) of {len(results)}\n"
+            message += "=" * 77 + "\n\n"
+            
+            if only_affected and not shown:
+                message += "No affected files.\n\n" + "=" * 77 + "\n\n"
+            
+            # Show detailed file results
+            for i, result in shown:
+                message += f"📁 FILE {i}: {result['filename']}\n"
+                if result['total'] > 0:
+                    message += f"   ✅ Advanced replacements: {result['total']}\n"
+                else:
+                    message += f"   ✅ No advanced matches found\n"
+                
+                for detail in result['details']:
+                    message += f"   {detail}\n"
+                message += "\n" + "=" * 77 + "\n\n"
+            
+            if errors:
+                message += f"❌ Errors:\n"
+                for error in errors:
+                    message += f"• {error}\n"
+                message += "\n"
+            
+            return message
         
-        if errors:
-            message += f"❌ Errors:\n"
-            for error in errors:
-                message += f"• {error}\n"
-            message += "\n"
-        
-        self.show_scrollable_results(message, "Advanced Replace results")
+        self.show_scrollable_results(build(False), "Advanced Replace results", builder=build)
     
-    def show_scrollable_results(self, message, title):
+    @staticmethod
+    def _result_is_affected(result, count_key):
+        """A file is 'affected' if it has matches/replacements, or failed with an error."""
+        if result.get(count_key, 0) > 0:
+            return True
+        if 'error' in result:
+            return True
+        return any('❌' in detail for detail in result.get('details', []))
+
+    def _add_affected_filter(self, parent, text_widget, builder):
+        """Build the 'show only affected files' toggle for a results window."""
+        filter_frame = tk.Frame(parent)
+        only_var = tk.BooleanVar(value=False)
+
+        def render():
+            text_widget.config(state=tk.NORMAL)
+            text_widget.delete("1.0", tk.END)
+            text_widget.insert("1.0", builder(only_var.get()))
+            text_widget.config(state=tk.DISABLED)
+
+        tk.Checkbutton(filter_frame, text="Show only affected files",
+                       variable=only_var, command=render,
+                       font=("Arial", 9)).pack(side=tk.LEFT)
+        return filter_frame
+
+    def _export_results_text(self, text_widget, title):
+        """Export exactly what the window currently shows, so the 'only affected' filter applies."""
+        safe = re.sub(r'[^A-Za-z0-9]+', '_', title).strip('_').lower()
+        path = filedialog.asksaveasfilename(
+            title="Export results",
+            defaultextension=".txt",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+            initialfile=f"{safe}.txt")
+        
+        if not path:
+            return
+        
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(text_widget.get("1.0", tk.END))
+            self.status_label.config(text=f"Results exported to {path}", fg="blue")
+            messagebox.showinfo("Export results", f"Results exported to:\n{path}")
+        except Exception as e:
+            messagebox.showerror("Export failed", f"Could not write the file:\n{str(e)}")
+
+    def show_scrollable_results(self, message, title, builder=None):
         """Show results in a scrollable window for long messages"""
         result_window = tk.Toplevel(self.root)
         result_window.title(title)
@@ -2186,11 +2530,15 @@ class WordTextReplacerSingle:
                                                font=("Consolas", 9), padx=10, pady=10)
         text_widget.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
+        if builder is not None:
+            self._add_affected_filter(result_window, text_widget, builder).pack(
+                fill=tk.X, padx=10, pady=(10, 0), before=text_widget)
+        
         # Insert the message
         text_widget.insert("1.0", message)
         text_widget.config(state=tk.DISABLED)  # Make it read-only
         
-        # Button frame for two buttons
+        # Button frame for the action buttons
         button_frame = tk.Frame(result_window)
         button_frame.pack(pady=(0, 10))
         
@@ -2199,6 +2547,12 @@ class WordTextReplacerSingle:
                           command=result_window.destroy,
                           bg="#4caf50", fg="white", font=("Arial", 10))
         ok_btn.pack(side=tk.LEFT, padx=(0, 10))
+        
+        # Export button (respects the "only affected files" filter)
+        export_btn = tk.Button(button_frame, text="💾 Export results",
+                              command=lambda: self._export_results_text(text_widget, title),
+                              bg="#0288d1", fg="white", font=("Arial", 10))
+        export_btn.pack(side=tk.LEFT, padx=(0, 10))
         
         # Close application button (closes result window AND main app)
         def close_application():
@@ -2210,8 +2564,7 @@ class WordTextReplacerSingle:
                                  bg="#333333", fg="white", font=("Arial", 10))
         close_app_btn.pack(side=tk.LEFT)
         
-        # Center the window
-        result_window.transient(self.root)
+        # No transient(): on Windows it strips the maximize/minimize buttons.
         result_window.grab_set()
 #########END OF PART 3B######
 
@@ -2223,18 +2576,13 @@ class WordTextReplacerSingle:
         self.root.mainloop()
 
 def main():
-    # Get the initial file from command line (if any)
-    initial_file = sys.argv[1] if len(sys.argv) > 1 else None
-    
-    # Validate the initial file
-    if initial_file and not os.path.exists(initial_file):
-        initial_file = None
-    
-    if initial_file and not initial_file.lower().endswith(('.docx', '.doc', '.docm')):
-        initial_file = None
+    # Explorer passes every selected file when the context-menu verb uses
+    # MultiSelectModel="Player"; a single path still works.
+    initial_files = [path for path in sys.argv[1:]
+                     if os.path.exists(path) and path.lower().endswith(WORD_EXTENSIONS)]
     
     try:
-        app = WordTextReplacerSingle(initial_file)
+        app = WordTextReplacerSingle(initial_files)
         app.run()
         
     except Exception as e:

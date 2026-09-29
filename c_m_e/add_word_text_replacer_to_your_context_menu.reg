@@ -3,6 +3,7 @@ Windows Registry Editor Version 5.00
 [HKEY_CLASSES_ROOT\SystemFileAssociations\.docx\Shell\WordTextReplacer]
 "Icon"="C:\\Windows\\system32\\shell32.dll,71"
 "MUIVerb"="Replace text in Word document(s)"
+"MultiSelectModel"="Single"
 
 [HKEY_CLASSES_ROOT\SystemFileAssociations\.docx\Shell\WordTextReplacer\command]
 @="\"C:\\path\\to\\your\\exe\\or\\python file\\divided\\by\\double backslashes\\word_text_replacer_single_with_add.exe\" \"%1\""
@@ -10,6 +11,15 @@ Windows Registry Editor Version 5.00
 [HKEY_CLASSES_ROOT\SystemFileAssociations\.doc\Shell\WordTextReplacer]
 "Icon"="C:\\Windows\\system32\\shell32.dll,71"
 "MUIVerb"="Replace text in Word document(s)"
+"MultiSelectModel"="Single"
 
 [HKEY_CLASSES_ROOT\SystemFileAssociations\.doc\Shell\WordTextReplacer\command]
+@="\"C:\\path\\to\\your\\exe\\or\\python file\\divided\\by\\double backslashes\\word_text_replacer_single_with_add.exe\" \"%1\""
+
+[HKEY_CLASSES_ROOT\SystemFileAssociations\.docm\Shell\WordTextReplacer]
+"Icon"="C:\\Windows\\system32\\shell32.dll,71"
+"MUIVerb"="Replace text in Word document(s)"
+"MultiSelectModel"="Single"
+
+[HKEY_CLASSES_ROOT\SystemFileAssociations\.docm\Shell\WordTextReplacer\command]
 @="\"C:\\path\\to\\your\\exe\\or\\python file\\divided\\by\\double backslashes\\word_text_replacer_single_with_add.exe\" \"%1\""
